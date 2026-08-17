@@ -16,7 +16,7 @@ import com.vault.security.PrivateKeyManager
 import java.util.Base64
 
 /**
- * 签名请求入口 (v3.2)
+ * 签名请求入口 (v3.3)
  *
  * 签名流程目标交互 (用户定义):
  *   Engine 请求签名 → 唤起本页 (透明, 无可见 UI) → 系统指纹框 →
@@ -27,13 +27,16 @@ import java.util.Base64
  * - 中继注册挑战应答: Sign("RELAY-AUTH-V1" ‖ fingerprint ‖ nonce)
  * - ECDH 信令签名:    Sign("ENGINE-SIGNAL-V1" ‖ ecdhPub ‖ senderFp ‖ receiverFp)
  *
- * v3.2 修复 (指纹框不弹/卡死):
- * - onNewIntent / onResume 统一走 maybeShowPrompt()
- *   (旧版 onNewIntent 重置 promptShown 后, 已 RESUMED 的实例
- *    不会再触发 onResume, 指纹框永不展示)
+ * v3.3 修复 (Vault 关闭后无法被唤起):
+ * - 移除 manifest 的 noHistory (透明页冷启动过渡被系统 pause 即销毁,
+ *   指纹框无机会展示; 对照能正常工作的 ImportActivity 没有 noHistory)
+ * - IpcReceiver 延迟到回送时构造; PrivateKeyManager 预检全程 try-catch,
+ *   存储异常回送 SIGN_FAILED 而非崩溃
+ * - 回送路径异常兜底, 任何失败都保证 finish()
  *
- * v3 修复保持: RESUMED 才 authenticate / ERROR_CANCELED 重试一次 /
- * 无 FLAG_SECURE / singleTask 防多实例叠加。
+ * v3.2 修复保持:
+ * - onNewIntent / onResume 统一走 maybeShowPrompt() 幂等入口
+ * - ERROR_CANCELED 自动重试一次; RESUMED 才 authenticate; 不设 FLAG_SECURE
  *
  * 安全约束:
  * - 组件受 signature 级权限保护, 仅同证书应用可唤起
@@ -59,6 +62,9 @@ class SignActivity : FragmentActivity() {
     /** ERROR_CANCELED 自动重试次数 (仅一次) */
     private var canceledRetryCount = 0
 
+    /** 已回送并结束 (防重复回调) */
+    private var finished = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!parseAndValidate(intent)) {
@@ -72,7 +78,6 @@ class SignActivity : FragmentActivity() {
         if (parseAndValidate(intent)) {
             promptShown = false
             canceledRetryCount = 0
-            // v3.2: 已 RESUMED 时必须在此主动展示
             maybeShowPrompt()
         } else {
             finish()
@@ -106,10 +111,10 @@ class SignActivity : FragmentActivity() {
     }
 
     /**
-     * 统一的指纹框展示入口 (v3.2): 幂等可重入。
+     * 统一的指纹框展示入口: 幂等可重入。
      */
     private fun maybeShowPrompt() {
-        if (!promptShown && !isFinishing &&
+        if (!promptShown && !isFinishing && !finished &&
             lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         ) {
             startBiometricAndSign()
@@ -118,25 +123,37 @@ class SignActivity : FragmentActivity() {
 
     /**
      * 指纹验证后执行签名
+     *
+     * 预检 (绑定状态) 是唯一需要存储 I/O 的前置步骤, 全程 try-catch;
+     * 其余路径 (生物能力检查/指纹框) 保持零 I/O 轻路径。
      */
     private fun startBiometricAndSign() {
         val sessionId = pendingSessionId
-        val appPackage = pendingAppPackage
         val payloadBytes = pendingPayload
-        val ipcReceiver = IpcReceiver(this, appPackage)
-        val privateKeyManager = PrivateKeyManager(this)
+        if (sessionId == null) {
+            finish()
+            return
+        }
+        val appPackage = pendingAppPackage
 
         fun respond(success: Boolean, errorCode: IpcErrorCode? = null, resultBase64: String? = null) {
-            // 回调显式拉起发起方 (Engine), Engine 任务回到前台
-            ipcReceiver.sendCallback(
-                IpcCallback(
-                    sessionId = sessionId,
-                    isSuccess = success,
-                    errorCode = errorCode
-                ),
-                resultBase64 = resultBase64
-            )
-            finish()
+            if (finished) return
+            finished = true
+            try {
+                // IpcReceiver 延迟至此构造 (v3.3: 指纹框展示前零 Keystore I/O)
+                IpcReceiver(this, appPackage).sendCallback(
+                    IpcCallback(
+                        sessionId = sessionId,
+                        isSuccess = success,
+                        errorCode = errorCode
+                    ),
+                    resultBase64 = resultBase64
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "sendCallback failed: ${t.message}")
+            } finally {
+                finish()
+            }
         }
 
         // 1. 载荷合法性
@@ -145,13 +162,26 @@ class SignActivity : FragmentActivity() {
             return
         }
 
-        // 2. 该应用必须已绑定密钥
-        if (!privateKeyManager.hasStoredKey(appPackage)) {
+        // 2. 该应用必须已绑定密钥 (存储预检, 异常回送失败而非崩溃)
+        val privateKeyManager = try {
+            PrivateKeyManager(this)
+        } catch (t: Throwable) {
+            Log.e(TAG, "PrivateKeyManager init failed: ${t.message}")
+            respond(false, IpcErrorCode.SIGN_FAILED)
+            return
+        }
+        val hasKey = try {
+            privateKeyManager.hasStoredKey(appPackage)
+        } catch (t: Throwable) {
+            Log.e(TAG, "hasStoredKey failed: ${t.message}")
+            false
+        }
+        if (!hasKey) {
             respond(false, IpcErrorCode.NO_KEY_BOUND)
             return
         }
 
-        // 3. 生物识别可用性
+        // 3. 生物识别可用性 (纯内存查询)
         val biometricManager = BiometricManager.from(this)
         if (biometricManager.canAuthenticate(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG
@@ -173,7 +203,7 @@ class SignActivity : FragmentActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    // 指纹通过 → 用该应用绑定的私钥签名 (P-256 毫秒级, 主线程可接受)
+                    // 指纹通过 → 用该应用绑定的私钥签名 (P-256 毫秒级)
                     try {
                         val signature = privateKeyManager.signChallenge(payloadBytes, appPackage)
                         val sigB64 = Base64.getEncoder().encodeToString(signature)
@@ -187,7 +217,7 @@ class SignActivity : FragmentActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     when (errorCode) {
                         BiometricPrompt.ERROR_CANCELED -> {
-                            if (canceledRetryCount < 1) {
+                            if (canceledRetryCount < 1 && !finished && !isFinishing) {
                                 canceledRetryCount++
                                 promptShown = false
                                 window.decorView.post { maybeShowPrompt() }

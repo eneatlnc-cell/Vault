@@ -2,6 +2,7 @@ package com.vault
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -13,28 +14,35 @@ import com.securesocial.core.ipc.IpcErrorCode
 import com.vault.ipc.IpcReceiver
 
 /**
- * 透明验证 Activity (v3.2)
+ * 透明验证 Activity (v3.3)
  *
  * 登录流程目标交互 (用户定义):
  *   Engine 验证窗口 → 唤起本页 (透明, 无可见 UI) → 系统指纹框 →
  *   指纹通过 → 自动回送签名回调 (Engine 回到前台) → 本页 finish()
- *   全程无需用户在 Vault 侧做任何操作, 无中间停留页面。
+ *   全程无需用户在 Vault 侧做任何操作。
  *
- * v3.2 修复 (指纹框不弹/卡 Loading 死循环):
- * - 旧版 onNewIntent 只重置 promptShown, 但 Activity 已 RESUMED 时
- *   onResume 不再触发 → 指纹框永不展示 → Engine 卡 Loading,
- *   用户重试又走 onNewIntent, 表现为 "绑定陷入循环"。
- *   现 onNewIntent / onResume 统一走 maybeShowPrompt()。
+ * v3.3 修复 (Vault 关闭后无法被唤起):
+ * - 移除 manifest 的 noHistory: 跨应用冷启动透明 Activity 时,
+ *   系统启动过渡会短暂 pause 目标页, noHistory 语义是 "不可见即销毁",
+ *   部分 ROM 上表现为 Activity 刚创建就被回收, 指纹框根本没机会展示
+ *   (对照: 能正常工作的 ImportActivity 没有 noHistory)。
+ *   生命周期已全部由本类代码显式 finish() 控制, noHistory 纯属有害。
+ * - IpcReceiver (内部初始化 PrivateKeyManager → EncryptedSharedPreferences,
+ *   Keystore 主线程操作, 冷启动数百毫秒) 延迟到 指纹通过后 才构造,
+ *   指纹框展示前零重初始化、零磁盘/Keystore I/O。
+ * - 回送路径全程 try-catch: 任何异常都不崩溃、都保证 finish(),
+ *   绝不留下透明僵尸页。
  *
- * v3 修复保持:
- * - authenticate() 时机: onResume (RESUMED 状态) 才展示
- * - ERROR_CANCELED 自动重试一次
- * - 不设 FLAG_SECURE (与指纹 overlay 冲突)
- *
- * 稳定性: manifest 锁定 portrait, 防透明页 config change 重建
- * 导致指纹框闪断 (抖动)。
+ * v3.2 修复保持:
+ * - onNewIntent / onResume 统一走 maybeShowPrompt() 幂等入口
+ *   (修复已 RESUMED 实例重置 promptShown 后指纹框永不展示的死循环)
+ * - ERROR_CANCELED 自动重试一次; RESUMED 才 authenticate; 不设 FLAG_SECURE
  */
 class VerifyActivity : FragmentActivity() {
+
+    companion object {
+        private const val TAG = "VaultVerify"
+    }
 
     private var pendingSessionId: String? = null
     private var pendingAppPackage: String = IpcContract.ENGINE_PACKAGE
@@ -44,6 +52,9 @@ class VerifyActivity : FragmentActivity() {
 
     /** ERROR_CANCELED 自动重试次数 (仅一次, 防死循环) */
     private var canceledRetryCount = 0
+
+    /** 已回送并结束 (防重复回调) */
+    private var finished = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,7 +67,6 @@ class VerifyActivity : FragmentActivity() {
         parseRequest(intent)
         promptShown = false
         canceledRetryCount = 0
-        // v3.2 关键修复: 已 RESUMED 时 onResume 不会再触发, 必须在此主动展示
         maybeShowPrompt()
     }
 
@@ -78,11 +88,10 @@ class VerifyActivity : FragmentActivity() {
     }
 
     /**
-     * 统一的指纹框展示入口 (v3.2):
-     * 仅在 未展示过 + 未销毁 + 已 RESUMED 时展示, 幂等可重入。
+     * 统一的指纹框展示入口: 幂等可重入。
      */
     private fun maybeShowPrompt() {
-        if (!promptShown && !isFinishing &&
+        if (!promptShown && !isFinishing && !finished &&
             lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         ) {
             startBiometricVerify()
@@ -90,31 +99,23 @@ class VerifyActivity : FragmentActivity() {
     }
 
     /**
-     * 弹出系统指纹验证并根据结果回送回调
+     * 弹出系统指纹验证 (轻路径: 展示前零 Keystore/磁盘 I/O)
      */
     private fun startBiometricVerify() {
         val sessionId = pendingSessionId
-        val appPackage = pendingAppPackage
-        val ipcReceiver = IpcReceiver(this, appPackage)
-
-        fun respond(success: Boolean, errorCode: IpcErrorCode? = null) {
-            // 回调显式拉起发起方 (Engine), Engine 任务回到前台
-            ipcReceiver.sendCallback(
-                IpcCallback(
-                    sessionId = sessionId,
-                    isSuccess = success,
-                    errorCode = errorCode
-                )
-            )
+        if (sessionId == null) {
             finish()
+            return
         }
+        val appPackage = pendingAppPackage
 
+        // 唯一的前置检查: 生物识别能力 (纯内存查询, 无 I/O)
         val biometricManager = BiometricManager.from(this)
         if (biometricManager.canAuthenticate(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG
             ) != BiometricManager.BIOMETRIC_SUCCESS
         ) {
-            respond(false, IpcErrorCode.BIOMETRIC_UNAVAILABLE)
+            respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_UNAVAILABLE)
             return
         }
 
@@ -129,25 +130,27 @@ class VerifyActivity : FragmentActivity() {
             this,
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    respond(true)
+                override fun onAuthenticationSucceeded(
+                    result: BiometricPrompt.AuthenticationResult
+                ) {
+                    respond(appPackage, sessionId, true, null)
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     when (errorCode) {
                         // 系统原因取消 (对话框抢占/窗口失焦/锁屏): 自动重试一次
                         BiometricPrompt.ERROR_CANCELED -> {
-                            if (canceledRetryCount < 1) {
+                            if (canceledRetryCount < 1 && !finished && !isFinishing) {
                                 canceledRetryCount++
                                 promptShown = false
                                 // 下一帧重试, 避免在错误回调栈内重入
                                 window.decorView.post { maybeShowPrompt() }
                             } else {
-                                respond(false, IpcErrorCode.BIOMETRIC_FAILED)
+                                respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
                             }
                         }
                         // 用户主动取消 / 锁定 / 硬件异常: 回送失败
-                        else -> respond(false, IpcErrorCode.BIOMETRIC_FAILED)
+                        else -> respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
                     }
                 }
             }
@@ -155,5 +158,33 @@ class VerifyActivity : FragmentActivity() {
 
         promptShown = true
         prompt.authenticate(promptInfo)
+    }
+
+    /**
+     * 回送验证结果并结束 (v3.3: IpcReceiver 延迟至此才构造;
+     * 全程异常兜底, 任何失败都保证 finish, 绝不留下透明僵尸页)
+     */
+    private fun respond(
+        appPackage: String,
+        sessionId: String,
+        success: Boolean,
+        errorCode: IpcErrorCode?
+    ) {
+        if (finished) return
+        finished = true
+        try {
+            IpcReceiver(this, appPackage).sendCallback(
+                IpcCallback(
+                    sessionId = sessionId,
+                    isSuccess = success,
+                    errorCode = errorCode
+                )
+            )
+        } catch (t: Throwable) {
+            // Keystore/存储异常也不可崩溃: 记录后直接结束
+            Log.e(TAG, "sendCallback failed: ${t.message}")
+        } finally {
+            finish()
+        }
     }
 }
