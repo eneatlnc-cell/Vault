@@ -6,43 +6,40 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import com.securesocial.core.ipc.IpcCallback
 import com.securesocial.core.ipc.IpcContract
 import com.securesocial.core.ipc.IpcErrorCode
 import com.vault.ipc.IpcReceiver
 
 /**
- * 透明验证 Activity (v3, 修复: 指纹框抖动/闪退)
+ * 透明验证 Activity (v3.2)
  *
- * 接收 Engine 发来的 myvault://verify?session=<id>&app=<pkg> 请求:
- * 1. 从 URI 解析 sessionId 与来源应用
- * 2. 弹出系统指纹验证 (BiometricPrompt, BIOMETRIC_STRONG)
- * 3. 通过 myvault://callback (携带同一 sessionId) 回送结果
- * 4. 回送后立即 finish(), 不展示自有 UI
+ * 登录流程目标交互 (用户定义):
+ *   Engine 验证窗口 → 唤起本页 (透明, 无可见 UI) → 系统指纹框 →
+ *   指纹通过 → 自动回送签名回调 (Engine 回到前台) → 本页 finish()
+ *   全程无需用户在 Vault 侧做任何操作, 无中间停留页面。
  *
- * v3 抖动修复 (三处叠加根因):
- * 1. authenticate() 时机: 旧版在 onCreate 内直接调用, Activity 尚未 RESUMED,
- *    BiometricFragment 挂载时机错误 —— 部分机型 (MIUI/ColorOS 等) 上指纹框
- *    闪现即被系统取消 (ERROR_CANCELED), 表现为 "抖动跳过"。
- *    现改为 onResume 中展示, 保证窗口已获得焦点。
- * 2. ERROR_CANCELED 错误分类: 系统取消 (新对话框抢占/窗口切换) 不再直接回送
- *    失败, 而是自动重试一次; 仅用户主动取消/锁定等才回送失败。
- * 3. FLAG_SECURE 移除: 本页无敏感内容 (仅系统指纹对话框), 透明窗口叠加
- *    FLAG_SECURE 在部分机型与指纹 overlay 冲突导致闪烁。
+ * v3.2 修复 (指纹框不弹/卡 Loading 死循环):
+ * - 旧版 onNewIntent 只重置 promptShown, 但 Activity 已 RESUMED 时
+ *   onResume 不再触发 → 指纹框永不展示 → Engine 卡 Loading,
+ *   用户重试又走 onNewIntent, 表现为 "绑定陷入循环"。
+ *   现 onNewIntent / onResume 统一走 maybeShowPrompt()。
  *
- * 多实例防护: manifest 配置 launchMode="singleTask", 连续唤起经 onNewIntent
- * 复用同一实例, 以最新请求为准, 不再叠加多个指纹框。
+ * v3 修复保持:
+ * - authenticate() 时机: onResume (RESUMED 状态) 才展示
+ * - ERROR_CANCELED 自动重试一次
+ * - 不设 FLAG_SECURE (与指纹 overlay 冲突)
  *
- * 安全约束:
- * - 全程不涉及私钥
- * - 组件受 signature 级权限保护, 仅同证书应用可唤起
+ * 稳定性: manifest 锁定 portrait, 防透明页 config change 重建
+ * 导致指纹框闪断 (抖动)。
  */
 class VerifyActivity : FragmentActivity() {
 
     private var pendingSessionId: String? = null
     private var pendingAppPackage: String = IpcContract.ENGINE_PACKAGE
 
-    /** 本次生命周期内指纹框是否已展示 (防止 onResume 反复触发) */
+    /** 本次生命周期内指纹框是否已展示 */
     private var promptShown = false
 
     /** ERROR_CANCELED 自动重试次数 (仅一次, 防死循环) */
@@ -50,17 +47,17 @@ class VerifyActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // v3: 不再设置 FLAG_SECURE —— 页面无敏感内容, 且透明窗口 + FLAG_SECURE
-        // 在部分机型与系统指纹对话框冲突导致闪烁 (抖动根因之一)
         parseRequest(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // singleTask 复用实例: 连续唤起以最新请求为准, 旧 sessionId 的回调作废
+        // singleTask 复用实例: 以最新请求为准 (旧 sessionId 作废)
         parseRequest(intent)
         promptShown = false
         canceledRetryCount = 0
+        // v3.2 关键修复: 已 RESUMED 时 onResume 不会再触发, 必须在此主动展示
+        maybeShowPrompt()
     }
 
     private fun parseRequest(intent: Intent?) {
@@ -77,8 +74,17 @@ class VerifyActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // v3 修复核心: RESUMED 状态下才展示指纹框 (窗口已获得焦点)
-        if (!promptShown && !isFinishing) {
+        maybeShowPrompt()
+    }
+
+    /**
+     * 统一的指纹框展示入口 (v3.2):
+     * 仅在 未展示过 + 未销毁 + 已 RESUMED 时展示, 幂等可重入。
+     */
+    private fun maybeShowPrompt() {
+        if (!promptShown && !isFinishing &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        ) {
             startBiometricVerify()
         }
     }
@@ -92,6 +98,7 @@ class VerifyActivity : FragmentActivity() {
         val ipcReceiver = IpcReceiver(this, appPackage)
 
         fun respond(success: Boolean, errorCode: IpcErrorCode? = null) {
+            // 回调显式拉起发起方 (Engine), Engine 任务回到前台
             ipcReceiver.sendCallback(
                 IpcCallback(
                     sessionId = sessionId,
@@ -103,12 +110,10 @@ class VerifyActivity : FragmentActivity() {
         }
 
         val biometricManager = BiometricManager.from(this)
-        val canAuthenticate = biometricManager.canAuthenticate(
-            BiometricManager.Authenticators.BIOMETRIC_STRONG
-        )
-
-        if (canAuthenticate != BiometricManager.BIOMETRIC_SUCCESS) {
-            // 设备无可用指纹硬件或未录入指纹
+        if (biometricManager.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG
+            ) != BiometricManager.BIOMETRIC_SUCCESS
+        ) {
             respond(false, IpcErrorCode.BIOMETRIC_UNAVAILABLE)
             return
         }
@@ -135,31 +140,20 @@ class VerifyActivity : FragmentActivity() {
                             if (canceledRetryCount < 1) {
                                 canceledRetryCount++
                                 promptShown = false
-                                // 等下一帧重新展示, 避免在错误回调栈内重入
-                                window.decorView.post { showPrompt(prompt, promptInfo) }
+                                // 下一帧重试, 避免在错误回调栈内重入
+                                window.decorView.post { maybeShowPrompt() }
                             } else {
-                                // 连续两次系统取消: 判定环境异常, 回送失败
                                 respond(false, IpcErrorCode.BIOMETRIC_FAILED)
                             }
                         }
-                        // 用户主动取消 / 锁定 / 硬件异常等: 回送失败
+                        // 用户主动取消 / 锁定 / 硬件异常: 回送失败
                         else -> respond(false, IpcErrorCode.BIOMETRIC_FAILED)
                     }
                 }
             }
         )
 
-        showPrompt(prompt, promptInfo)
-    }
-
-    private fun showPrompt(prompt: BiometricPrompt, promptInfo: BiometricPrompt.PromptInfo) {
-        // 仅在未销毁且已 RESUMED 时展示 (抖动修复的核心约束)
-        if (!isFinishing && lifecycle.currentState.isAtLeast(
-                androidx.lifecycle.Lifecycle.State.RESUMED
-            )
-        ) {
-            promptShown = true
-            prompt.authenticate(promptInfo)
-        }
+        promptShown = true
+        prompt.authenticate(promptInfo)
     }
 }
