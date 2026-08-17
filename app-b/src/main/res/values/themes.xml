@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        基础主题: NoActionBar。
+        UI 完全由 Jetpack Compose 绘制 (Material3 深色主题), 此处仅提供窗口底色与状态栏配置。
+        不依赖 AppCompat (应用未引入该依赖)。
+    -->
+    <style name="Theme.Vault" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/vault_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/vault_background</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+    </style>
+
+</resources>

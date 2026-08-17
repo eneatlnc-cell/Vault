@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vault</string>
+
+    <!-- 通用 -->
+    <string name="common_confirm">确认</string>
+    <string name="common_cancel">取消</string>
+    <string name="common_retry">重试</string>
+    <string name="common_done">完成</string>
+    <string name="common_refresh">刷新</string>
+    <string name="common_back">返回</string>
+
+    <!-- 扫码导入 -->
+    <string name="scan_title">扫码导入密钥</string>
+    <string name="scan_hint">点击下方按钮拍照扫描 Engine 生成的二维码</string>
+    <string name="scan_take_photo">拍照扫码</string>
+    <string name="scan_permission_rationale">需要相机权限以扫描 Engine 生成的二维码</string>
+    <string name="scan_grant_permission">授予相机权限</string>
+    <string name="scan_parsing">正在解析二维码…</string>
+    <string name="scan_confirm_title">确认导入密钥</string>
+    <string name="scan_confirm_subtitle">即将把以下密钥导入保险箱并加密存储:</string>
+    <string name="scan_confirm_button">确认导入</string>
+    <string name="scan_importing">正在加密并写入硬件级存储…</string>
+    <string name="scan_success_title">导入成功</string>
+    <string name="scan_success_subtitle">密钥已加密保存于保险箱</string>
+    <string name="scan_error_default">二维码格式错误或密钥不合法</string>
+    <string name="scan_double_confirm_message">确认要将该密钥导入保险箱? 导入后私钥将被硬件级加密存储。</string>
+    <string name="scan_replace_warning">新密钥将替换保险箱中已存的密钥 (如有), 旧密钥会被删除且无法恢复。</string>
+
+    <!-- 保险箱状态 -->
+    <string name="vault_title">保险箱状态</string>
+    <string name="vault_empty">保险箱为空, 请通过扫码导入密钥</string>
+    <string name="vault_item_label">公钥指纹</string>
+    <string name="vault_item_imported_at">导入时间</string>
+    <string name="vault_action_scan">扫码导入密钥</string>
+    <string name="vault_action_code">生成动态码</string>
+
+    <!-- 动态码 -->
+    <string name="code_title">动态码</string>
+    <string name="code_idle_hint">点击下方按钮生成 30 秒有效的动态码</string>
+    <string name="code_generate">生成动态码</string>
+    <string name="code_generating">正在生成…</string>
+    <string name="code_expired">已过期</string>
+    <string name="code_remaining">剩余有效时间</string>
+
+    <!-- v2: IPC 权限描述 (系统授权提示用) -->
+    <string name="perm_ipc_desc">允许同签名应用 (Engine) 唤起 Vault 的密钥导入、验证与签名入口</string>
+</resources>

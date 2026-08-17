@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 临时拍照文件存放于 cache 目录, 拍照解码后立即删除 -->
+    <cache-path
+        name="vault_photos"
+        path="photos/" />
+</paths>

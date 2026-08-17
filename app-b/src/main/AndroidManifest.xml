@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        权限声明:
+        - 不声明 CAMERA 权限, 避免安装时触发"敏感权限"系统警告。
+        - 需要拍照时通过 Intent(MediaStore.ACTION_IMAGE_CAPTURE) 启动系统相机,
+          由系统相机 App 处理相机权限, Vault 本身不需要任何相机权限。
+        - 绝不申请 INTERNET / ACCESS_NETWORK_STATE 等任何网络权限, 实现物理隔离。
+        - 零第三方分析/埋点 SDK。
+    -->
+
+    <!--
+        v2: Vault 侧 signature 级自定义权限, 保护 IPC 入口组件。
+        仅与 Vault 使用同一签名证书的应用 (即 Engine) 可被系统授予,
+        恶意 App 无论声明与否都无法唤起 import / verify / sign 入口。
+    -->
+    <permission
+        android:name="com.vault.permission.VAULT_IPC"
+        android:label="Vault IPC Entry"
+        android:description="@string/perm_ipc_desc"
+        android:protectionLevel="signature" />
+
+    <!-- v2: 持有 Engine 侧权限, 允许 Vault 向 Engine 投递回调 -->
+    <uses-permission android:name="com.engine.permission.ENGINE_CALLBACK" />
+
+    <!--
+        Android 11+ (API 30) 包可见性声明:
+        1. 显式包名查询: 允许 Vault 向 Engine (com.engine) 回送 myvault://callback
+        2. Intent 查询: 兼容探测
+    -->
+    <queries>
+        <package android:name="com.engine" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="myvault" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".VaultApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Vault">
+
+        <!-- 桌面启动入口 (v2: 不再注册 VIEW intent-filter, 与 IPC 入口彻底分离) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Vault">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            IPC 导入入口 (v2, 修复: 隐式 Intent 广播式投递):
+            - signature 权限保护: 仅 Engine 可唤起
+            - 无 BROWSABLE: 浏览器/网页不可达
+            - URI 仅携带 session 标识; 密钥材料经受保护的 Intent Extra 单向传递
+        -->
+        <activity
+            android:name=".ImportActivity"
+            android:exported="true"
+            android:permission="com.vault.permission.VAULT_IPC"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Vault">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data
+                    android:scheme="myvault"
+                    android:host="import" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            IPC 验证入口 (v2: 权限保护 + 去 BROWSABLE):
+            接收 Engine 发起的 myvault://verify?session=<id>,
+            弹出系统指纹验证 (BiometricPrompt) 后回送签名回调并立即关闭。
+        -->
+        <activity
+            android:name=".VerifyActivity"
+            android:exported="true"
+            android:permission="com.vault.permission.VAULT_IPC"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data
+                    android:scheme="myvault"
+                    android:host="verify" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            IPC 签名入口 (v2 新增):
+            接收 Engine 的 myvault://sign 请求, 指纹验证后用绑定私钥签名,
+            结果经签名回调返回 (中继挑战应答 / ECDH 信令签名)。
+        -->
+        <activity
+            android:name=".SignActivity"
+            android:exported="true"
+            android:permission="com.vault.permission.VAULT_IPC"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data
+                    android:scheme="myvault"
+                    android:host="sign" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            FileProvider: 用于通过 Intent(MediaStore.ACTION_IMAGE_CAPTURE) 拍照时
+            共享临时图片文件给系统相机 App 写入。
+            不涉及任何网络或外部暴露, 仅限 vault-photos 临时目录。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>

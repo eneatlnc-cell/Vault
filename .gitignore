@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+*.apk
+*.aab
+*.dex
+
+# Android
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.cxx/
+
+# Kotlin
+*.kotlin_metadata
+
+# Misc
+*.log
+*.tmp
+*.swp
+*~
