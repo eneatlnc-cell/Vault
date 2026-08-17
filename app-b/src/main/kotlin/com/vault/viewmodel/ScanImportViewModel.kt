@@ -58,20 +58,27 @@ class ScanImportViewModel(application: Application) : AndroidViewModel(applicati
 
     /**
      * 扫码命中后调用: 解析并校验二维码载荷。
+     *
+     * v3: 全程 try-catch —— 畸形载荷若在协程内抛出未捕获异常
+     * (如 JSON 解析/Base64 解码), 会直接击穿 ViewModel 崩溃应用。
      */
     fun onQrScanned(payload: String) {
         if (_state.value !is State.Scanning) return
         _state.value = State.Parsing
 
         viewModelScope.launch {
-            val keyData = KeyPayloadSerializer.deserialize(payload)
-            if (keyData == null || !KeyPayloadSerializer.validate(keyData)) {
-                _state.value = State.Error("二维码格式错误或密钥不合法")
-                return@launch
+            try {
+                val keyData = KeyPayloadSerializer.deserialize(payload)
+                if (keyData == null || !KeyPayloadSerializer.validate(keyData)) {
+                    _state.value = State.Error("二维码格式错误或密钥不合法")
+                    return@launch
+                }
+                pendingKeyData = keyData
+                val fingerprint = KeyFingerprint.compute(keyData.publicKey)
+                _state.value = State.Confirming(fingerprint)
+            } catch (e: Exception) {
+                _state.value = State.Error("二维码解析失败: ${e.message ?: "未知错误"}")
             }
-            pendingKeyData = keyData
-            val fingerprint = KeyFingerprint.compute(keyData.publicKey)
-            _state.value = State.Confirming(fingerprint)
         }
     }
 

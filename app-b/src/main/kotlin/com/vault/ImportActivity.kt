@@ -1,8 +1,8 @@
 package com.vault
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -28,12 +28,16 @@ import com.vault.viewmodel.ScanImportViewModel
  * 流程:
  * 1. 解析 myvault://import?session=<id>&app=<pkg> (+ 可选 EXTRA_PAYLOAD)
  * 2. payload 非空 → 直接进入解析确认; 否则展示扫码界面
- * 3. 导入完成 (ScanImportViewModel 自动回送签名回调) → finish() 回到来源应用
+ * 3. 确认弹窗 → BIOMETRIC_STRONG 指纹门 → 导入 (v3 新增, 修复首次绑定无指纹)
+ * 4. 导入完成 (自动回送签名回调) → Success 页 → "完成" 回保险箱主界面
  *
- * v3: 解析 URI 的 app 参数, 导入时把密钥绑定到 "该应用名下"
- * (状态页列表显示应用名, 便于区分不同接入应用)。
+ * v3 修复 (返回 Vault 闪退/掉回桌面):
+ * - 旧版 noHistory + 独立 task, finish 后 task 为空掉回 Launcher;
+ *   冷启动重建时序异常在部分机型上闪退
+ * - 现改为 "完成" 按钮显式启动 MainActivity (CLEAR_TASK|NEW_TASK)
+ *   回到保险箱主界面, 导航路径确定, 不依赖系统 task 回退栈
  */
-class ImportActivity : ComponentActivity() {
+class ImportActivity : androidx.fragment.app.FragmentActivity() {
 
     private var request by mutableStateOf<IpcImportRequest?>(null)
     private var sourceAppPackage by mutableStateOf(IpcContract.ENGINE_PACKAGE)
@@ -60,19 +64,33 @@ class ImportActivity : ComponentActivity() {
                     sessionId = request?.sessionId.orEmpty(),
                     payload = request?.payload,
                     sourceAppPackage = sourceAppPackage,
-                    onDone = { finish() }
+                    onDone = { returnToVaultHome() }
                 )
             }
         }
     }
 
-    override fun onNewIntent(intent: android.content.Intent) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // IPC 流程中的重复唤起: 以最新请求为准 (ViewModel 状态机自身幂等保护)
         parseRequest(intent)
     }
 
-    private fun parseRequest(intent: android.content.Intent?) {
+    /**
+     * v3: 显式返回保险箱主界面
+     *
+     * CLEAR_TASK 清掉本导入 task (含自身), 用户落地在状态页,
+     * 可立即看到新绑定的应用条目 —— 不再依赖系统回退栈。
+     */
+    private fun returnToVaultHome() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        startActivity(intent)
+        finish()
+    }
+
+    private fun parseRequest(intent: Intent?) {
         val receiver = IpcReceiver(this)
         request = receiver.handleIntent(intent)
         // v3: 来源应用 (URI app 参数, 默认 Engine)
@@ -87,7 +105,7 @@ class ImportActivity : ComponentActivity() {
  * 导入流程 Composable:
  * - bindSession 绑定回调会话与来源应用 (完成时自动回送签名回调)
  * - payload 非空时跳过摄像头, 直接解析来源应用移交的密钥材料
- * - onDone → finish() 返回来源应用
+ * - onDone → 返回保险箱主界面
  */
 @androidx.compose.runtime.Composable
 private fun ImportFlow(

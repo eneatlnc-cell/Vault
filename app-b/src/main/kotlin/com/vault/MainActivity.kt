@@ -2,7 +2,6 @@ package com.vault
 
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -25,8 +24,11 @@ import com.vault.viewmodel.VaultStatusViewModel
  * - android:permission 作用于组件级; 若 IPC intent-filter 留在此处,
  *   加权限会连桌面启动一并拦截, 不加则恶意 App 仍可唤起 —— 只能拆分
  * - 本 Activity 仅保留 LAUNCHER 入口, 不注册任何 VIEW intent-filter
+ *
+ * v3: 改为 FragmentActivity —— 手动扫码导入路径的确认弹窗同样需要
+ * BiometricPrompt (BIOMETRIC_STRONG) 生物识别门, 与 IPC 导入路径安全一致。
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

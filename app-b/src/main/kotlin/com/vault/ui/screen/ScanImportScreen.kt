@@ -167,7 +167,8 @@ fun ScanImportScreen(
                 Button(
                     onClick = {
                         showFinalDialog = false
-                        viewModel.confirmImport()
+                        // v3: 确认导入前必须通过生物识别 (BIOMETRIC_STRONG)
+                        requestBiometricThenImport(context, viewModel)
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
@@ -428,6 +429,70 @@ private fun ProgressOverlay(modifier: Modifier, message: String) {
             )
         }
     }
+}
+
+// ---- 生物识别门 (v3) ----
+
+/**
+ * 确认导入前的强制生物识别门 (修复: 首次绑定无指纹输入环节)
+ *
+ * 安全语义: 导入 = 用新密钥覆盖旧身份, 属不可逆高危操作。
+ * 仅凭 "拿到已解锁的手机" 不应足以完成绑定 —— 必须再过一道
+ * BIOMETRIC_STRONG 指纹验证 (TEE 级, 无法被后台模拟)。
+ *
+ * 降级策略: 宿主非 FragmentActivity 或设备无强指纹能力时,
+ * 保留原有二次确认弹窗直接导入 (老设备兼容), 安全性由
+ * signature 权限门禁 + 确认弹窗兜底。
+ *
+ * @param context  宿主 Activity context (ImportActivity / MainActivity, 均为 FragmentActivity)
+ * @param viewModel 扫码导入状态机 (指纹通过后调用 confirmImport)
+ */
+private fun requestBiometricThenImport(
+    context: Context,
+    viewModel: ScanImportViewModel
+) {
+    val activity = context as? androidx.fragment.app.FragmentActivity
+    if (activity == null) {
+        viewModel.confirmImport()
+        return
+    }
+
+    val biometricManager = androidx.biometric.BiometricManager.from(context)
+    if (biometricManager.canAuthenticate(
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+        ) != androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+    ) {
+        // 无强指纹硬件/未录入: 降级直接导入
+        viewModel.confirmImport()
+        return
+    }
+
+    val promptInfo = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+        .setTitle("确认导入密钥")
+        .setSubtitle("验证指纹以将密钥绑定至保险箱")
+        .setNegativeButtonText("取消")
+        .setAllowedAuthenticators(
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+        )
+        .build()
+
+    val prompt = androidx.biometric.BiometricPrompt(
+        activity,
+        androidx.core.content.ContextCompat.getMainExecutor(activity),
+        object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(
+                result: androidx.biometric.BiometricPrompt.AuthenticationResult
+            ) {
+                // 指纹通过 → 执行导入
+                viewModel.confirmImport()
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                // 用户取消/多次失败: 停留在确认页 (State.Confirming), 不导入
+            }
+        }
+    )
+    prompt.authenticate(promptInfo)
 }
 
 // ---- QR 解码工具函数 ----

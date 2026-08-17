@@ -121,7 +121,8 @@ private fun BindingList(bindings: List<SecureStorage.StoredBinding>) {
 }
 
 /**
- * 应用绑定卡片 (v3): 应用名 + 包名 + 指纹 + 绑定时间。
+ * 应用绑定卡片 (v3): 应用名 + 指纹 + 绑定时间。
+ * 包名不展示 (v3 按反馈移除; 同名应用以指纹与绑定时间区分)。
  */
 @Composable
 private fun BindingCard(item: SecureStorage.StoredBinding) {
@@ -138,15 +139,6 @@ private fun BindingCard(item: SecureStorage.StoredBinding) {
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold
             )
-            // 包名 (小字, 区分同名应用)
-            if (item.appLabel != item.appPackage) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = item.appPackage,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             Spacer(Modifier.height(10.dp))
             Text(
                 text = stringResource(R.string.vault_item_label),
