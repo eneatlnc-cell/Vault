@@ -3,8 +3,30 @@ package com.vault
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import androidx.activity.addCallback
+import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
@@ -12,45 +34,49 @@ import com.securesocial.core.ipc.IpcCallback
 import com.securesocial.core.ipc.IpcContract
 import com.securesocial.core.ipc.IpcErrorCode
 import com.vault.ipc.IpcReceiver
+import com.vault.ui.theme.VaultTheme
 
 /**
- * 透明验证 Activity (v3.3)
+ * 指纹验证入口 (v3.4)
  *
  * 登录流程目标交互 (用户定义):
- *   Engine 验证窗口 → 唤起本页 (透明, 无可见 UI) → 系统指纹框 →
- *   指纹通过 → 自动回送签名回调 (Engine 回到前台) → 本页 finish()
- *   全程无需用户在 Vault 侧做任何操作。
+ *   Engine 验证窗口 → 唤起本页 → 系统指纹框 → 指纹通过 →
+ *   自动回送签名回调 (Engine 回前台) → 本页自动 finish()
  *
- * v3.3 修复 (Vault 关闭后无法被唤起):
- * - 移除 manifest 的 noHistory: 跨应用冷启动透明 Activity 时,
- *   系统启动过渡会短暂 pause 目标页, noHistory 语义是 "不可见即销毁",
- *   部分 ROM 上表现为 Activity 刚创建就被回收, 指纹框根本没机会展示
- *   (对照: 能正常工作的 ImportActivity 没有 noHistory)。
- *   生命周期已全部由本类代码显式 finish() 控制, noHistory 纯属有害。
- * - IpcReceiver (内部初始化 PrivateKeyManager → EncryptedSharedPreferences,
- *   Keystore 主线程操作, 冷启动数百毫秒) 延迟到 指纹通过后 才构造,
- *   指纹框展示前零重初始化、零磁盘/Keystore I/O。
- * - 回送路径全程 try-catch: 任何异常都不崩溃、都保证 finish(),
- *   绝不留下透明僵尸页。
+ * ★ v3.4 根因修复: 放弃 "透明无 UI Activity" 承载方案。
+ * 透明窗口在跨应用冷启动期间极易被 ROM 判定焦点丢失/不可见,
+ * BiometricPrompt 随即收到 ERROR_CANCELED —— 这正是最初
+ * "指纹框抖动跳过" 与后来 "Vault 唤不起来" 的共同根源。
+ * 绑定流程的指纹门 (ImportActivity, 不透明 UI) 一直稳定, 证明
+ * 不透明宿主才是可靠路径。现对齐为: 不透明最小 UI 页
+ * (图标 + "正在验证身份" + 加载圈), 指纹框稳定浮于其上。
  *
- * v3.2 修复保持:
+ * 稳定性设计:
+ * - ERROR_CANCELED 重试 3 次 (间隔 250ms): 消化冷启动过渡期的
+ *   系统性取消; 仅用户主动取消 (否定按钮/锁定) 才回送失败
  * - onNewIntent / onResume 统一走 maybeShowPrompt() 幂等入口
- *   (修复已 RESUMED 实例重置 promptShown 后指纹框永不展示的死循环)
- * - ERROR_CANCELED 自动重试一次; RESUMED 才 authenticate; 不设 FLAG_SECURE
+ * - 回送全程 try-catch + 必然 finish(), 绝不留僵尸页
+ * - IpcReceiver (Keystore I/O) 延迟到回送时才构造
  */
 class VerifyActivity : FragmentActivity() {
 
     companion object {
         private const val TAG = "VaultVerify"
+
+        /** 系统性取消 (ERROR_CANCELED) 的自动重试上限 */
+        private const val MAX_CANCEL_RETRY = 3
+
+        /** 重试间隔 (毫秒) */
+        private const val CANCEL_RETRY_DELAY_MS = 250L
     }
 
     private var pendingSessionId: String? = null
     private var pendingAppPackage: String = IpcContract.ENGINE_PACKAGE
 
-    /** 本次生命周期内指纹框是否已展示 */
+    /** 本次生命周期内指纹框是否已发起 */
     private var promptShown = false
 
-    /** ERROR_CANCELED 自动重试次数 (仅一次, 防死循环) */
+    /** ERROR_CANCELED 已重试次数 */
     private var canceledRetryCount = 0
 
     /** 已回送并结束 (防重复回调) */
@@ -58,6 +84,26 @@ class VerifyActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 不透明最小 UI: 指纹框的稳定宿主 (v3.4)
+        setContent {
+            VaultTheme {
+                VerifyingScreen()
+            }
+        }
+
+        // v3.4: 用户按返回键 → 回送失败回调后再结束。
+        // 旧实现直接 finish 且不回送, Engine 登录页只能干等 20s 超时。
+        onBackPressedDispatcher.addCallback(this) {
+            val sessionId = pendingSessionId
+            if (!finished && sessionId != null) {
+                Log.w(TAG, "User backed out of verification, reporting failure")
+                respond(pendingAppPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
+            } else {
+                finish()
+            }
+        }
+
         parseRequest(intent)
     }
 
@@ -77,6 +123,7 @@ class VerifyActivity : FragmentActivity() {
             pendingAppPackage = data.getQueryParameter(IpcContract.PARAM_APP)
                 ?.takeIf { it.isNotBlank() }
                 ?: IpcContract.ENGINE_PACKAGE
+            maybeShowPrompt()
         } else {
             finish()
         }
@@ -109,7 +156,7 @@ class VerifyActivity : FragmentActivity() {
         }
         val appPackage = pendingAppPackage
 
-        // 唯一的前置检查: 生物识别能力 (纯内存查询, 无 I/O)
+        // 唯一前置检查: 生物识别能力 (纯内存查询)
         val biometricManager = BiometricManager.from(this)
         if (biometricManager.canAuthenticate(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG
@@ -138,20 +185,20 @@ class VerifyActivity : FragmentActivity() {
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     when (errorCode) {
-                        // 系统原因取消 (对话框抢占/窗口失焦/锁屏): 自动重试一次
-                        BiometricPrompt.ERROR_CANCELED -> {
-                            if (canceledRetryCount < 1 && !finished && !isFinishing) {
-                                canceledRetryCount++
-                                promptShown = false
-                                // 下一帧重试, 避免在错误回调栈内重入
-                                window.decorView.post { maybeShowPrompt() }
-                            } else {
-                                respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
-                            }
+                        // 系统性取消 (窗口过渡/焦点被抢/新对话框覆盖):
+                        // 延迟重试, 最多 MAX_CANCEL_RETRY 次
+                        BiometricPrompt.ERROR_CANCELED,
+                        BiometricPrompt.ERROR_HW_NOT_PRESENT -> {
+                            handleSystemCancel(appPackage, sessionId)
                         }
-                        // 用户主动取消 / 锁定 / 硬件异常: 回送失败
+                        // 用户主动取消 / 多次失败锁定 / 硬件忙: 回送失败
                         else -> respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
                     }
+                }
+
+                // 指纹不匹配: 系统会继续留在指纹框, 无需干预
+                override fun onAuthenticationFailed() {
+                    // no-op
                 }
             }
         )
@@ -161,8 +208,22 @@ class VerifyActivity : FragmentActivity() {
     }
 
     /**
-     * 回送验证结果并结束 (v3.3: IpcReceiver 延迟至此才构造;
-     * 全程异常兜底, 任何失败都保证 finish, 绝不留下透明僵尸页)
+     * 系统性取消的重试决策 (v3.4)
+     */
+    private fun handleSystemCancel(appPackage: String, sessionId: String) {
+        if (canceledRetryCount < MAX_CANCEL_RETRY && !finished && !isFinishing) {
+            canceledRetryCount++
+            promptShown = false
+            Log.w(TAG, "Biometric canceled by system, retry $canceledRetryCount/$MAX_CANCEL_RETRY")
+            window.decorView.postDelayed({ maybeShowPrompt() }, CANCEL_RETRY_DELAY_MS)
+        } else {
+            Log.e(TAG, "Biometric canceled repeatedly, giving up")
+            respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)
+        }
+    }
+
+    /**
+     * 回送验证结果并结束 (IpcReceiver 延迟至此构造; 异常兜底必然 finish)
      */
     private fun respond(
         appPackage: String,
@@ -181,10 +242,56 @@ class VerifyActivity : FragmentActivity() {
                 )
             )
         } catch (t: Throwable) {
-            // Keystore/存储异常也不可崩溃: 记录后直接结束
             Log.e(TAG, "sendCallback failed: ${t.message}")
         } finally {
             finish()
+        }
+    }
+}
+
+/**
+ * 最小验证页 (不透明): 指纹框的稳定宿主。
+ * 页面本身无敏感信息, 不设 FLAG_SECURE (避免与系统指纹层冲突)。
+ */
+@Composable
+private fun VerifyingScreen() {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Fingerprint,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+            Text(
+                text = "正在验证身份",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "请按系统提示完成指纹验证\n完成后将自动返回应用",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(28.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                strokeWidth = 3.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }

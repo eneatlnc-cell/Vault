@@ -14,6 +14,7 @@ enum class IpcErrorCode(val code: String, val description: String) {
     BIOMETRIC_FAILED("BIOMETRIC_FAILED", "指纹验证未通过"),
     NO_KEY_BOUND("NO_KEY_BOUND", "Vault 中没有已绑定的私钥, 无法签名"),
     SIGN_FAILED("SIGN_FAILED", "签名失败 (载荷格式错误或密码学异常)"),
+    SIGN_TIMEOUT("SIGN_TIMEOUT", "签名请求超时 (Vault 未响应)"),
     UNKNOWN_ERROR("UNKNOWN_ERROR", "未知错误");
 
     companion object {

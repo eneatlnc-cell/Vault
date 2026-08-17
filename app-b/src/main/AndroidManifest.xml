@@ -83,11 +83,12 @@
         </activity>
 
         <!--
-            IPC 验证入口 (v3: singleTask 防多实例叠加):
-            接收 Engine 发起的 myvault://verify?session=<id>&app=<pkg>,
-            弹出系统指纹验证 (BiometricPrompt) 后回送签名回调并立即关闭。
-            launchMode=singleTask: 连续唤起复用同一实例 (onNewIntent), 避免
-            多个指纹框叠加互抢焦点导致的 "抖动/闪退"。
+            IPC 验证入口 (v3.4: 不透明最小 UI 页):
+            接收 Engine 发起的 myvault://verify?session=<id>&app=<pkg>。
+            ★ 主题改为不透明 Theme.Vault: 透明窗口承载 BiometricPrompt
+            在跨应用冷启动时极易被 ROM 取消 (指纹框闪断/唤不起来的根源),
+            不透明宿主是绑定流程已验证的稳定路径。
+            launchMode=singleTask: 连续唤起复用实例 (onNewIntent)。
         -->
         <activity
             android:name=".VerifyActivity"
@@ -96,7 +97,7 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            android:theme="@style/Theme.Vault">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -107,10 +108,9 @@
         </activity>
 
         <!--
-            IPC 签名入口 (v3: singleTask 防多实例叠加):
-            接收 Engine 的 myvault://sign 请求, 指纹验证后用该应用绑定的私钥签名,
-            结果经签名回调返回 (中继挑战应答 / ECDH 信令签名)。
-            中继重连风暴时连续唤起经 onNewIntent 复用实例, 只保留最新请求。
+            IPC 签名入口 (v3.4: 不透明最小 UI 页, 同 VerifyActivity):
+            接收 Engine 的 myvault://sign 请求, 指纹验证后用该应用绑定的
+            私钥签名, 结果经签名回调返回 (中继挑战应答 / ECDH 信令签名)。
         -->
         <activity
             android:name=".SignActivity"
@@ -119,7 +119,7 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:screenOrientation="portrait"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            android:theme="@style/Theme.Vault">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
