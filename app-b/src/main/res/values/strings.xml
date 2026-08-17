@@ -25,7 +25,6 @@
     <string name="scan_success_subtitle">密钥已加密保存于保险箱</string>
     <string name="scan_error_default">二维码格式错误或密钥不合法</string>
     <string name="scan_double_confirm_message">确认要将该密钥导入保险箱? 导入后私钥将被硬件级加密存储。</string>
-    <string name="scan_replace_warning">新密钥将替换保险箱中已存的密钥 (如有), 旧密钥会被删除且无法恢复。</string>
 
     <!-- 保险箱状态 -->
     <string name="vault_title">保险箱状态</string>

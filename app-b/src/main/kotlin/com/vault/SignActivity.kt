@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -34,6 +35,7 @@ import com.securesocial.core.ipc.IpcCallback
 import com.securesocial.core.ipc.IpcContract
 import com.securesocial.core.ipc.IpcErrorCode
 import com.vault.ipc.IpcReceiver
+import com.vault.security.AuthGrantCache
 import com.vault.security.PrivateKeyManager
 import com.vault.ui.theme.VaultTheme
 import java.util.Base64
@@ -70,8 +72,10 @@ class SignActivity : FragmentActivity() {
         /** 系统性取消 (ERROR_CANCELED) 的自动重试上限 */
         private const val MAX_CANCEL_RETRY = 3
 
-        /** 重试间隔 (毫秒) */
-        private const val CANCEL_RETRY_DELAY_MS = 250L
+        /**
+         * 重试间隔递增表 (v3.5): 消化跨应用冷启动过渡期, 见 VerifyActivity
+         */
+        private val CANCEL_RETRY_DELAYS_MS = longArrayOf(400L, 900L, 1600L)
     }
 
     private var pendingSessionId: String? = null
@@ -87,13 +91,16 @@ class SignActivity : FragmentActivity() {
     /** 已回送并结束 (防重复回调) */
     private var finished = false
 
+    /** 静默签名模式 (授权窗口内, 不弹指纹框) */
+    private var silentMode = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // 不透明最小 UI: 指纹框的稳定宿主 (v3.4)
         setContent {
             VaultTheme {
-                SigningScreen()
+                SigningScreen(silent = silentMode.value)
             }
         }
 
@@ -153,13 +160,54 @@ class SignActivity : FragmentActivity() {
     }
 
     /**
+     * 窗口真正获得焦点后才首次弹指纹框 (v3.5), 见 VerifyActivity
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            maybeShowPrompt()
+        }
+    }
+
+    /**
      * 统一的指纹框展示入口: 幂等可重入。
+     * v3.5: 授权窗口内 (30s 内刚完成过生物识别) 走静默签名, 不弹指纹框。
      */
     private fun maybeShowPrompt() {
-        if (!promptShown && !isFinishing && !finished &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-        ) {
+        if (promptShown || isFinishing || finished) return
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+
+        if (AuthGrantCache.isRecentlyGranted()) {
+            promptShown = true  // 占位防重入 (静默路径同样只执行一次)
+            silentMode.value = true
+            Log.d(TAG, "Silent signing: biometric granted recently")
+            startSilentSign()
+        } else {
             startBiometricAndSign()
+        }
+    }
+
+    /**
+     * 静默签名 (v3.5): 授权窗口内直接签名, 不再弹第二个指纹框。
+     * 消除 "登录指纹 → 挑战签名指纹" 连续两次验证的死循环体验。
+     */
+    private fun startSilentSign() {
+        val payloadBytes = pendingPayload ?: run {
+            respond(false, IpcErrorCode.SIGN_FAILED)
+            return
+        }
+        try {
+            val manager = PrivateKeyManager(this)
+            if (!manager.hasStoredKey(pendingAppPackage)) {
+                respond(false, IpcErrorCode.NO_KEY_BOUND)
+                return
+            }
+            val signature = manager.signChallenge(payloadBytes, pendingAppPackage)
+            val sigB64 = Base64.getEncoder().encodeToString(signature)
+            respond(true, null, sigB64)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Silent sign failed: ${t.message}")
+            respond(false, IpcErrorCode.SIGN_FAILED, null)
         }
     }
 
@@ -254,6 +302,8 @@ class SignActivity : FragmentActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    // v3.5: 指纹通过 → 授权后续 Sign 请求的静默窗口
+                    AuthGrantCache.grant()
                     // 指纹通过 → 用该应用绑定的私钥签名 (P-256 毫秒级)
                     try {
                         val signature = privateKeyManager.signChallenge(payloadBytes, appPackage)
@@ -286,14 +336,15 @@ class SignActivity : FragmentActivity() {
     }
 
     /**
-     * 系统性取消的重试决策 (v3.4)
+     * 系统性取消的重试决策 (v3.5: 递增间隔)
      */
     private fun handleSystemCancel(giveUp: () -> Unit) {
         if (canceledRetryCount < MAX_CANCEL_RETRY && !finished && !isFinishing) {
+            val delay = CANCEL_RETRY_DELAYS_MS[canceledRetryCount]
             canceledRetryCount++
             promptShown = false
-            Log.w(TAG, "Biometric canceled by system, retry $canceledRetryCount/$MAX_CANCEL_RETRY")
-            window.decorView.postDelayed({ maybeShowPrompt() }, CANCEL_RETRY_DELAY_MS)
+            Log.w(TAG, "Biometric canceled by system, retry $canceledRetryCount/$MAX_CANCEL_RETRY in ${delay}ms")
+            window.decorView.postDelayed({ maybeShowPrompt() }, delay)
         } else {
             Log.e(TAG, "Biometric canceled repeatedly, giving up")
             giveUp()
@@ -303,9 +354,11 @@ class SignActivity : FragmentActivity() {
 
 /**
  * 最小签名页 (不透明): 指纹框的稳定宿主。
+ *
+ * @param silent v3.5: 静默签名模式 (授权窗口内, 无指纹框), 文案相应切换
  */
 @Composable
-private fun SigningScreen() {
+private fun SigningScreen(silent: Boolean) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -325,14 +378,15 @@ private fun SigningScreen() {
             )
             Spacer(modifier = Modifier.height(20.dp))
             Text(
-                text = "签名请求",
+                text = if (silent) "正在签名" else "签名请求",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onBackground
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "请按系统提示完成指纹验证\n完成后将自动返回应用",
+                text = if (silent) "正在使用保险箱密钥完成签名\n完成后将自动返回应用"
+                else "请按系统提示完成指纹验证\n完成后将自动返回应用",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center

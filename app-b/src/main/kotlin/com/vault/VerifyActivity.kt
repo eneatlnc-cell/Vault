@@ -34,6 +34,7 @@ import com.securesocial.core.ipc.IpcCallback
 import com.securesocial.core.ipc.IpcContract
 import com.securesocial.core.ipc.IpcErrorCode
 import com.vault.ipc.IpcReceiver
+import com.vault.security.AuthGrantCache
 import com.vault.ui.theme.VaultTheme
 
 /**
@@ -66,8 +67,13 @@ class VerifyActivity : FragmentActivity() {
         /** 系统性取消 (ERROR_CANCELED) 的自动重试上限 */
         private const val MAX_CANCEL_RETRY = 3
 
-        /** 重试间隔 (毫秒) */
-        private const val CANCEL_RETRY_DELAY_MS = 250L
+        /**
+         * 重试间隔递增表 (v3.5): 跨应用冷启动过渡动画可持续 300ms~1s+,
+         * 旧版固定 250ms 重试 3 次全部落在过渡期内 → 必然连环取消 →
+         * 回送失败 → Engine 重试再唤起 = 死循环。递增间隔确保至少
+         * 最后一次重试落在窗口稳定期。
+         */
+        private val CANCEL_RETRY_DELAYS_MS = longArrayOf(400L, 900L, 1600L)
     }
 
     private var pendingSessionId: String? = null
@@ -135,6 +141,21 @@ class VerifyActivity : FragmentActivity() {
     }
 
     /**
+     * 窗口真正获得焦点后才首次弹指纹框 (v3.5)。
+     *
+     * 跨应用冷启动时 onResume 早于过渡动画结束, 此时 authenticate()
+     * 极易被 ROM 判定窗口未就绪而 ERROR_CANCELED。ImportActivity 的
+     * 指纹门一直稳定, 正是因为它由用户点击触发 (窗口早已获焦)。
+     * maybeShowPrompt 幂等, 双入口 (onResume/onWindowFocus) 不冲突。
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            maybeShowPrompt()
+        }
+    }
+
+    /**
      * 统一的指纹框展示入口: 幂等可重入。
      */
     private fun maybeShowPrompt() {
@@ -180,6 +201,8 @@ class VerifyActivity : FragmentActivity() {
                 override fun onAuthenticationSucceeded(
                     result: BiometricPrompt.AuthenticationResult
                 ) {
+                    // v3.5: 授权后续 Sign 请求的静默窗口 (消除登录→签名的二次指纹)
+                    AuthGrantCache.grant()
                     respond(appPackage, sessionId, true, null)
                 }
 
@@ -208,14 +231,15 @@ class VerifyActivity : FragmentActivity() {
     }
 
     /**
-     * 系统性取消的重试决策 (v3.4)
+     * 系统性取消的重试决策 (v3.5: 递增间隔)
      */
     private fun handleSystemCancel(appPackage: String, sessionId: String) {
         if (canceledRetryCount < MAX_CANCEL_RETRY && !finished && !isFinishing) {
+            val delay = CANCEL_RETRY_DELAYS_MS[canceledRetryCount]
             canceledRetryCount++
             promptShown = false
-            Log.w(TAG, "Biometric canceled by system, retry $canceledRetryCount/$MAX_CANCEL_RETRY")
-            window.decorView.postDelayed({ maybeShowPrompt() }, CANCEL_RETRY_DELAY_MS)
+            Log.w(TAG, "Biometric canceled by system, retry $canceledRetryCount/$MAX_CANCEL_RETRY in ${delay}ms")
+            window.decorView.postDelayed({ maybeShowPrompt() }, delay)
         } else {
             Log.e(TAG, "Biometric canceled repeatedly, giving up")
             respond(appPackage, sessionId, false, IpcErrorCode.BIOMETRIC_FAILED)

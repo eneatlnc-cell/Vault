@@ -155,12 +155,6 @@ fun ScanImportScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 12.dp)
                     )
-                    Text(
-                        text = stringResource(R.string.scan_replace_warning),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
                 }
             },
             confirmButton = {
@@ -483,6 +477,9 @@ private fun requestBiometricThenImport(
             override fun onAuthenticationSucceeded(
                 result: androidx.biometric.BiometricPrompt.AuthenticationResult
             ) {
+                // v3.5: 导入指纹成功 → 授权后续 Sign 请求的静默窗口,
+                // 绑定完成后 Engine 的中继挑战签名无需再弹第二次指纹
+                com.vault.security.AuthGrantCache.grant()
                 // 指纹通过 → 执行导入
                 viewModel.confirmImport()
             }
