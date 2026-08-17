@@ -2,6 +2,7 @@ package com.vault.ipc
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Log
 import com.securesocial.core.ipc.IpcCallback
@@ -12,26 +13,27 @@ import com.securesocial.core.ipc.IpcSignRequest
 import com.vault.security.PrivateKeyManager
 
 /**
- * IPC 接收/回送层 (v2)。
+ * IPC 接收/回送层 (v3)。
  *
  * 职责:
- * - [handleIntent]: 解析 myvault://import 唤起请求 (sessionId + 可选 payload Extra)
+ * - [handleIntent]: 解析 myvault://import 唤起请求 (sessionId + 来源应用 + 可选 payload Extra)
  * - [parseSignRequest]: 解析 myvault://sign 签名请求
  * - [sendCallback]: 回送携带 ECDSA 签名的 myvault://callback 结果
+ * - [resolveAppLabel]: 由包名解析来源应用显示名 (PackageManager 权威解析, 不信任传入名)
+ *
+ * v3 多应用绑定:
+ * - 实例绑定一个来源应用 (appPackage), 回调签名使用 "该应用专属的绑定私钥"
+ * - 无显式 app 参数时默认 Engine (com.engine), 兼容旧客户端
  *
  * v2 安全增强 (修复: 隐式 Intent 广播式投递 / 回调伪造):
- * - 回调 Intent 显式锁定 Engine 包名 (setPackage), 不再向系统广播,
- *   恶意 App 无法截获回调内容, 也无法冒充接收方
- * - 回调必须携带签名: sig = Sign_vault(sessionId ‖ status ‖ ts),
- *   Engine 用绑定公钥验签 + 时间戳窗口校验 —— 回调从 "状态字符串"
- *   升级为 "Vault 私钥持有证明"
- * - 无绑定密钥时 (如导入前的用户取消) 只能发送未签名回调,
- *   Engine 侧对该场景有明确的接受规则 (仅接受未签名的失败回调)
- *
- * 安全约束:
- * - URI 中绝不携带私钥明文, 仅承载 session 标识、状态码与签名
+ * - 回调 Intent 显式锁定 Engine 包名 (setPackage), 不再向系统广播
+ * - 回调必须携带签名: sig = Sign_vault(sessionId ‖ status ‖ ts)
+ * - 无绑定密钥时只能发送未签名回调, Engine 侧按规则接受 (仅限失败回调)
  */
-class IpcReceiver(private val context: Context) {
+class IpcReceiver(
+    private val context: Context,
+    private val appPackage: String = IpcContract.ENGINE_PACKAGE
+) {
 
     companion object {
         private const val TAG = "VaultIpc"
@@ -40,10 +42,31 @@ class IpcReceiver(private val context: Context) {
     private val privateKeyManager = PrivateKeyManager(context.applicationContext)
     private val b64e = java.util.Base64.getEncoder()
 
+    /** 本次会话对应的来源应用包名 (供导入流程落库) */
+    val sourceAppPackage: String get() = appPackage
+
+    /** 来源应用显示名 (PackageManager 权威解析; 解析失败回退包名) */
+    val sourceAppLabel: String by lazy { resolveAppLabel(appPackage) }
+
+    /**
+     * 由包名解析应用显示名。
+     *
+     * 安全说明: 显示名从本机 PackageManager 读取 (权威来源), 不信任调用方
+     * 传入的任何名称字段; 能到达此处的调用方已通过 signature 权限门禁。
+     */
+    private fun resolveAppLabel(pkg: String): String {
+        return try {
+            val ai = context.packageManager.getApplicationInfo(pkg, 0)
+            context.packageManager.getApplicationLabel(ai)?.toString()?.takeIf { it.isNotBlank() }
+                ?: pkg
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.w(TAG, "App label unresolved for $pkg, fallback to package name")
+            pkg
+        }
+    }
+
     /**
      * 解析唤起 Intent, 返回导入请求 (含 session 和可选 payload); 非 IPC 唤起返回 null。
-     *
-     * payload 非空时, Vault 可直接解析密钥而无需开启摄像头扫描。
      */
     fun handleIntent(intent: Intent?): IpcImportRequest? {
         if (intent == null) return null
@@ -51,7 +74,7 @@ class IpcReceiver(private val context: Context) {
     }
 
     /**
-     * 解析签名请求 (myvault://sign?session=..&payload=..); 非法请求返回 null
+     * 解析签名请求 (myvault://sign?session=..&payload=..); 非法请求返回 null。
      */
     fun parseSignRequest(intent: Intent?): IpcSignRequest? {
         val uri = intent?.data ?: return null
@@ -59,13 +82,13 @@ class IpcReceiver(private val context: Context) {
     }
 
     /**
-     * 回送 IPC 结果 (v2: 签名 + 显式包名投递)
+     * 回送 IPC 结果 (v3: 按来源应用路由签名密钥)
      *
      * @param callback     回调状态 (sessionId / 成败 / 错误码)
      * @param resultBase64 业务结果 (签名请求返回的 Base64 签名字节), 仅成功时有意义
      *
      * 签名规则:
-     * - Vault 已绑定密钥 → 用活动私钥对 (sessionId ‖ status ‖ ts) 签名
+     * - 该应用已绑定密钥 → 用其绑定私钥对 (sessionId ‖ status ‖ ts) 签名
      * - 未绑定密钥 → 发送未签名回调 (仅导入流程的失败场景, Engine 会按规则接受)
      */
     fun sendCallback(callback: IpcCallback, resultBase64: String? = null) {
@@ -73,12 +96,12 @@ class IpcReceiver(private val context: Context) {
         val status = if (callback.isSuccess) IpcContract.STATUS_SUCCESS else IpcContract.STATUS_FAIL
         val ts = System.currentTimeMillis()
 
-        // 尝试用活动密钥签名
+        // 尝试用该应用的绑定密钥签名
         var signature: String? = null
         try {
-            if (privateKeyManager.hasStoredKey()) {
+            if (privateKeyManager.hasStoredKey(appPackage)) {
                 val content = IpcContract.callbackSigningContent(sessionId, status, ts.toString())
-                val sig = privateKeyManager.signChallenge(content)
+                val sig = privateKeyManager.signChallenge(content, appPackage)
                 signature = b64e.encodeToString(sig)
             }
         } catch (e: Exception) {
@@ -98,8 +121,9 @@ class IpcReceiver(private val context: Context) {
         }
 
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(callbackUri)).apply {
-            // v2: 显式锁定 Engine 包名, 杜绝广播式投递被恶意 App 截获/冒充
-            setPackage(IpcContract.ENGINE_PACKAGE)
+            // v3: 显式锁定来源应用包名 (回调回到发起方), 杜绝广播式投递被截获/冒充
+            // appPackage=com.engine 时与 v2 行为一致
+            setPackage(appPackage)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 

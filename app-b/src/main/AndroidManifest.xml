@@ -83,15 +83,18 @@
         </activity>
 
         <!--
-            IPC 验证入口 (v2: 权限保护 + 去 BROWSABLE):
-            接收 Engine 发起的 myvault://verify?session=<id>,
+            IPC 验证入口 (v3: singleTask 防多实例叠加):
+            接收 Engine 发起的 myvault://verify?session=<id>&app=<pkg>,
             弹出系统指纹验证 (BiometricPrompt) 后回送签名回调并立即关闭。
+            launchMode=singleTask: 连续唤起复用同一实例 (onNewIntent), 避免
+            多个指纹框叠加互抢焦点导致的 "抖动/闪退"。
         -->
         <activity
             android:name=".VerifyActivity"
             android:exported="true"
             android:permission="com.vault.permission.VAULT_IPC"
             android:excludeFromRecents="true"
+            android:launchMode="singleTask"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
@@ -104,15 +107,17 @@
         </activity>
 
         <!--
-            IPC 签名入口 (v2 新增):
-            接收 Engine 的 myvault://sign 请求, 指纹验证后用绑定私钥签名,
+            IPC 签名入口 (v3: singleTask 防多实例叠加):
+            接收 Engine 的 myvault://sign 请求, 指纹验证后用该应用绑定的私钥签名,
             结果经签名回调返回 (中继挑战应答 / ECDH 信令签名)。
+            中继重连风暴时连续唤起经 onNewIntent 复用实例, 只保留最新请求。
         -->
         <activity
             android:name=".SignActivity"
             android:exported="true"
             android:permission="com.vault.permission.VAULT_IPC"
             android:excludeFromRecents="true"
+            android:launchMode="singleTask"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>

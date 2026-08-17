@@ -76,7 +76,7 @@ fun VaultStatusScreen(
         ) {
             when (val s = state) {
                 VaultStatusViewModel.State.Empty -> EmptyVault()
-                is VaultStatusViewModel.State.Loaded -> FingerprintList(s.fingerprints)
+                is VaultStatusViewModel.State.Loaded -> BindingList(s.bindings)
             }
         }
     }
@@ -108,26 +108,46 @@ private fun EmptyVault() {
 }
 
 @Composable
-private fun FingerprintList(fingerprints: List<SecureStorage.StoredFingerprint>) {
+private fun BindingList(bindings: List<SecureStorage.StoredBinding>) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        items(fingerprints, key = { it.fingerprint }) { item ->
-            FingerprintCard(item)
+        items(bindings, key = { it.appPackage }) { item ->
+            BindingCard(item)
         }
     }
 }
 
+/**
+ * 应用绑定卡片 (v3): 应用名 + 包名 + 指纹 + 绑定时间。
+ */
 @Composable
-private fun FingerprintCard(item: SecureStorage.StoredFingerprint) {
+private fun BindingCard(item: SecureStorage.StoredBinding) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            // 应用名 (大字, 状态页主标识)
+            Text(
+                text = item.appLabel,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold
+            )
+            // 包名 (小字, 区分同名应用)
+            if (item.appLabel != item.appPackage) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = item.appPackage,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(10.dp))
             Text(
                 text = stringResource(R.string.vault_item_label),
                 style = MaterialTheme.typography.labelSmall,

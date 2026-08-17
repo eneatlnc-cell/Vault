@@ -10,15 +10,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * 保险箱状态页 ViewModel。
+ * 保险箱状态页 ViewModel (v3)。
  *
- * 仅展示已存储公钥指纹与导入时间, 绝不暴露任何私钥信息, 无导出入口。
+ * 展示各接入应用的绑定 (应用名 + 包名 + 公钥指纹 + 绑定时间),
+ * 绝不暴露任何私钥信息, 无导出入口。
  */
 class VaultStatusViewModel(application: Application) : AndroidViewModel(application) {
 
     sealed interface State {
         object Empty : State
-        data class Loaded(val fingerprints: List<SecureStorage.StoredFingerprint>) : State
+        data class Loaded(val bindings: List<SecureStorage.StoredBinding>) : State
     }
 
     private val secureStorage = SecureStorage(application)
@@ -31,11 +32,11 @@ class VaultStatusViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * 从 SecureStorage 读取已存储指纹列表。
+     * 从 SecureStorage 读取应用绑定列表。
      */
     fun load() {
         viewModelScope.launch {
-            val list = secureStorage.getStoredFingerprints()
+            val list = secureStorage.getAllBindings()
             _state.value = if (list.isEmpty()) State.Empty else State.Loaded(list)
         }
     }

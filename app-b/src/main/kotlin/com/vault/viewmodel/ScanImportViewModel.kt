@@ -37,20 +37,23 @@ class ScanImportViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private val privateKeyManager = PrivateKeyManager(application)
-    private val ipcReceiver = IpcReceiver(application)
+    private var ipcReceiver: IpcReceiver = IpcReceiver(application)
 
     private val _state = MutableStateFlow<State>(State.Scanning)
     val state: StateFlow<State> = _state.asStateFlow()
 
     private var pendingKeyData: KeyPayloadSerializer.KeyPairData? = null
     private var sessionId: String? = null
+    private var sourceAppPackage: String = com.securesocial.core.ipc.IpcContract.ENGINE_PACKAGE
 
     /**
-     * 绑定 IPC 会话标识 (来自 myvault://import?session=...)。
-     * 非空表示由 App A 唤起, 完成后需回送 callback。
+     * 绑定 IPC 会话标识与来源应用 (来自 myvault://import?session=..&app=..)。
+     * 非空 sessionId 表示由接入应用唤起, 完成后需回送 callback。
      */
-    fun bindSession(id: String?) {
+    fun bindSession(id: String?, appPackage: String) {
         sessionId = id
+        sourceAppPackage = appPackage
+        ipcReceiver = IpcReceiver(application, appPackage)
     }
 
     /**
@@ -84,7 +87,13 @@ class ScanImportViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                val result = privateKeyManager.importKey(data)
+                // v3: 绑定到来源应用名下 (含 PackageManager 解析的显示名)
+                val appLabel = ipcReceiver.sourceAppLabel
+                val result = privateKeyManager.importKey(
+                    keyData = data,
+                    appPackage = sourceAppPackage,
+                    appLabel = appLabel
+                )
                 pendingKeyData = null
                 sendCallback(IpcCallback(sessionId = sessionId, isSuccess = true))
                 _state.value = State.Success(result.fingerprint)

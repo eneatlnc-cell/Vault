@@ -14,11 +14,15 @@ import android.net.Uri
  * - 私钥仍仅经二维码光学通道或受保护的 Intent Extra (import) 传递
  *
  * URI 格式:
- * - 唤起导入:  myvault://import?session=<sessionId>
- * - 唤起验证:  myvault://verify?session=<sessionId>
- * - 签名请求:  myvault://sign?session=<sessionId>&payload=<urlencoded base64>
+ * - 唤起导入:  myvault://import?session=<sessionId>&app=<callingPackage>
+ * - 唤起验证:  myvault://verify?session=<sessionId>&app=<callingPackage>
+ * - 签名请求:  myvault://sign?session=<sessionId>&app=<callingPackage>&payload=<urlencoded base64>
  * - 成功回调:  myvault://callback?session=<id>&status=success&ts=<millis>&sig=<base64>[&result=<base64>]
  * - 失败回调:  myvault://callback?session=<id>&status=fail&code=<err>&ts=<millis>&sig=<base64>
+ *
+ * 多应用绑定 (v3): app 参数标识发起方包名, Vault 据此路由 "该应用专属的活动密钥",
+ * 并在状态页展示来源应用名称。包名可信: IPC 入口受 signature 权限保护,
+ * 只有同证书应用能进入; Vault 侧再用 PackageManager 校验该包真实存在。
  */
 object IpcContract {
     const val SCHEME = "myvault"
@@ -34,6 +38,7 @@ object IpcContract {
     const val PARAM_RESULT = "result"
     const val PARAM_TS = "ts"
     const val PARAM_SIG = "sig"
+    const val PARAM_APP = "app"
 
     const val STATUS_SUCCESS = "success"
     const val STATUS_FAIL = "fail"
@@ -84,12 +89,15 @@ object IpcContract {
 
     /**
      * 构建唤起 App B 导入的 URI
+     *
+     * @param appPackage 发起方包名 (v3: Vault 据此绑定 "该应用专属的活动密钥")
      */
-    fun buildImportUri(sessionId: String): String {
+    fun buildImportUri(sessionId: String, appPackage: String = ENGINE_PACKAGE): String {
         return Uri.Builder()
             .scheme(SCHEME)
             .authority(HOST_IMPORT)
             .appendQueryParameter(PARAM_SESSION, sessionId)
+            .appendQueryParameter(PARAM_APP, appPackage)
             .build()
             .toString()
     }
@@ -142,11 +150,12 @@ object IpcContract {
     /**
      * 构建唤起指纹验证的 URI
      */
-    fun buildVerifyUri(sessionId: String): String {
+    fun buildVerifyUri(sessionId: String, appPackage: String = ENGINE_PACKAGE): String {
         return Uri.Builder()
             .scheme(SCHEME)
             .authority(HOST_VERIFY)
             .appendQueryParameter(PARAM_SESSION, sessionId)
+            .appendQueryParameter(PARAM_APP, appPackage)
             .build()
             .toString()
     }
@@ -155,14 +164,19 @@ object IpcContract {
      * 构建签名请求 URI。
      *
      * Engine 将待签字节 (Base64) 发给 Vault, Vault 验证生物识别后用
-     * 绑定的身份私钥做 ECDSA 签名, 签名结果经 callback 的 result 参数返回。
+     * 该应用绑定的身份私钥做 ECDSA 签名, 签名结果经 callback 的 result 参数返回。
      * 典型用途: 中继注册挑战应答、ECDH 信号公钥签名。
      */
-    fun buildSignUri(sessionId: String, payloadBase64: String): String {
+    fun buildSignUri(
+        sessionId: String,
+        payloadBase64: String,
+        appPackage: String = ENGINE_PACKAGE
+    ): String {
         return Uri.Builder()
             .scheme(SCHEME)
             .authority(HOST_SIGN)
             .appendQueryParameter(PARAM_SESSION, sessionId)
+            .appendQueryParameter(PARAM_APP, appPackage)
             .appendQueryParameter(PARAM_PAYLOAD, payloadBase64)
             .build()
             .toString()
