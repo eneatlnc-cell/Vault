@@ -165,6 +165,21 @@ class SecureStorage(context: Context) {
     }
 
     /**
+     * v3.6 取回某应用绑定的身份公钥 (X.509 编码字节)。
+     *
+     * 用于 "身份恢复" 流程: Engine 清除数据后经 restore 请求取回公钥,
+     * 恢复同一 DID。公钥非秘密材料, 不涉及私钥解密。
+     */
+    fun getPublicKey(appPackage: String): ByteArray? {
+        val pubB64 = prefs.getString(PREFIX_PUB + appPackage, null) ?: return null
+        return try {
+            Base64.getDecoder().decode(pubB64)
+        } catch (e: IllegalArgumentException) {
+            null
+        }
+    }
+
+    /**
      * 删除某个应用的绑定 (重新导入前调用; 其他应用的绑定保留)。
      */
     fun deleteBinding(appPackage: String) {

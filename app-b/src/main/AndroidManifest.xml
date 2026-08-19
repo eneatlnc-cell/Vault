@@ -108,6 +108,30 @@
         </activity>
 
         <!--
+            IPC 身份恢复入口 (v3.6: 不透明最小 UI 页):
+            接收 Engine 发起的 myvault://restore?session=<id>&app=<pkg>。
+            Engine 清除数据/换机后本地身份丢失时, 经本页指纹门取回
+            该应用绑定的公钥 (私钥不出 Vault) → 恢复同一 DID。
+            无绑定 → 回送 NO_BINDING。工程模式同 VerifyActivity。
+        -->
+        <activity
+            android:name=".RestoreActivity"
+            android:exported="true"
+            android:permission="com.vault.permission.VAULT_IPC"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Vault">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data
+                    android:scheme="myvault"
+                    android:host="restore" />
+            </intent-filter>
+        </activity>
+
+        <!--
             IPC 签名入口 (v3.4: 不透明最小 UI 页, 同 VerifyActivity):
             接收 Engine 的 myvault://sign 请求, 指纹验证后用该应用绑定的
             私钥签名, 结果经签名回调返回 (中继挑战应答 / ECDH 信令签名)。

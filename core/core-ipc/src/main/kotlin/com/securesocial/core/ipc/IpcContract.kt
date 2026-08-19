@@ -30,6 +30,7 @@ object IpcContract {
     const val HOST_CALLBACK = "callback"
     const val HOST_VERIFY = "verify"
     const val HOST_SIGN = "sign"
+    const val HOST_RESTORE = "restore"
 
     const val PARAM_SESSION = "session"
     const val PARAM_STATUS = "status"
@@ -197,4 +198,32 @@ object IpcContract {
     /** 检查 URI 是否为签名请求 */
     fun isSignUri(uri: Uri): Boolean =
         uri.scheme == SCHEME && uri.host == HOST_SIGN
+
+    /**
+     * v3.6 构建 "身份恢复" 唤起 URI。
+     *
+     * 场景: Engine 清除数据 / 换机重装后本地绑定身份丢失, 但 Vault 仍持有
+     * 该应用专属的绑定私钥。Engine 发起 restore 请求, Vault 在指纹门后
+     * 将 "该绑定的公钥 (X.509 Base64)" 经回调 result 参数送回 ——
+     * Engine 恢复同一 DID 身份, 私钥全程不出 Vault。
+     *
+     * 安全模型:
+     * - 回调通道受 ENGINE_CALLBACK signature 权限保护 (仅 Vault 可投递)
+     * - 回调 sig 用 "被恢复的那把绑定私钥" 签名, Engine 用返回的公钥验签
+     *   —— 构成私钥持有证明 + 公私钥自洽证明
+     * - 公钥与指纹均非秘密材料, 回调泄露不影响私钥安全
+     */
+    fun buildRestoreUri(sessionId: String, appPackage: String = ENGINE_PACKAGE): String {
+        return Uri.Builder()
+            .scheme(SCHEME)
+            .authority(HOST_RESTORE)
+            .appendQueryParameter(PARAM_SESSION, sessionId)
+            .appendQueryParameter(PARAM_APP, appPackage)
+            .build()
+            .toString()
+    }
+
+    /** 检查 URI 是否为身份恢复请求 */
+    fun isRestoreUri(uri: Uri): Boolean =
+        uri.scheme == SCHEME && uri.host == HOST_RESTORE
 }
