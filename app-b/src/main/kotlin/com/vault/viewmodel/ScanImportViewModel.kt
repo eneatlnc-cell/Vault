@@ -53,7 +53,7 @@ class ScanImportViewModel(application: Application) : AndroidViewModel(applicati
     fun bindSession(id: String?, appPackage: String) {
         sessionId = id
         sourceAppPackage = appPackage
-        ipcReceiver = IpcReceiver(application, appPackage)
+        ipcReceiver = IpcReceiver(getApplication(), appPackage)
     }
 
     /**

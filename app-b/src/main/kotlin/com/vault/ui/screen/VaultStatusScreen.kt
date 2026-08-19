@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.vault.R
 import com.vault.security.SecureStorage
+import com.vault.ui.components.VaultHeader
 import com.vault.viewmodel.VaultStatusViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -204,14 +205,6 @@ private fun BottomActions(
             modifier = Modifier.weight(1f)
         )
     }
-}
-
-/**
- * 指纹展示: 前 8 位 ... 后 8 位。
- */
-internal fun formatFingerprint(fingerprint: String): String {
-    if (fingerprint.length <= 16) return fingerprint
-    return fingerprint.take(8) + "..." + fingerprint.takeLast(8)
 }
 
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())

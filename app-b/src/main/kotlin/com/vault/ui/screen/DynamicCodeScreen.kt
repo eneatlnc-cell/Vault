@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.vault.R
+import com.vault.ui.components.VaultHeader
 import com.vault.viewmodel.DynamicCodeViewModel
 
 /**

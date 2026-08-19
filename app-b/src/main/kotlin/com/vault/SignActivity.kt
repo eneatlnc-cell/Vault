@@ -82,6 +82,9 @@ class SignActivity : FragmentActivity() {
     private var pendingAppPackage: String = IpcContract.ENGINE_PACKAGE
     private var pendingPayload: ByteArray? = null
 
+    /** v3.5.1: 待签载荷摘要 (审计修复: 盲签)。非空时签名页展示 */
+    private var payloadDigest = mutableStateOf<Pair<String, String>?>(null)
+
     /** 本次生命周期内指纹框是否已发起 */
     private var promptShown = false
 
@@ -100,7 +103,10 @@ class SignActivity : FragmentActivity() {
         // 不透明最小 UI: 指纹框的稳定宿主 (v3.4)
         setContent {
             VaultTheme {
-                SigningScreen(silent = silentMode.value)
+                SigningScreen(
+                    silent = silentMode.value,
+                    payloadDigest = payloadDigest.value
+                )
             }
         }
 
@@ -151,7 +157,30 @@ class SignActivity : FragmentActivity() {
         } catch (e: IllegalArgumentException) {
             null
         }
+        payloadDigest.value = pendingPayload?.let { describePayload(it) }
         return true
+    }
+
+    /**
+     * v3.5.1: 载荷人读摘要 (审计修复: 盲签)
+     *
+     * 原实现签名确认页对载荷零展示 —— Engine 被入侵后可让用户盲签任意内容
+     * (如伪造 ECDH 信令实施 MITM)。展示两要素供人工比对:
+     * 1. 域前缀: 载荷开头的可打印 ASCII 段 (协议域分隔符, 如 RELAY-AUTH-V1)
+     * 2. SHA-256 摘要前 16 hex: 载荷全量绑定, 与 Engine 侧展示值比对可发现篡改
+     */
+    private fun describePayload(bytes: ByteArray): Pair<String, String> {
+        val printablePrefix = buildString {
+            for (b in bytes) {
+                val c = b.toInt() and 0xFF
+                if (c in 0x20..0x7E && length < 24) append(c.toChar()) else break
+            }
+        }.ifBlank { "(binary)" }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+            .take(16)
+        return printablePrefix to digest
     }
 
     override fun onResume() {
@@ -356,9 +385,11 @@ class SignActivity : FragmentActivity() {
  * 最小签名页 (不透明): 指纹框的稳定宿主。
  *
  * @param silent v3.5: 静默签名模式 (授权窗口内, 无指纹框), 文案相应切换
+ * @param payloadDigest v3.5.1: (域前缀, SHA-256 前 16 hex); 盲签修复 ——
+ *        用户验证指纹前可核对待签内容, 与 Engine 侧展示值比对可发现载荷篡改
  */
 @Composable
-private fun SigningScreen(silent: Boolean) {
+private fun SigningScreen(silent: Boolean, payloadDigest: Pair<String, String>? = null) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -391,6 +422,27 @@ private fun SigningScreen(silent: Boolean) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+
+            // v3.5.1: 待签载荷摘要 (盲签修复)
+            if (payloadDigest != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "待签内容: ${payloadDigest.first}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "SHA-256: ${payloadDigest.second}",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+
             Spacer(modifier = Modifier.height(28.dp))
             CircularProgressIndicator(
                 modifier = Modifier.size(28.dp),
