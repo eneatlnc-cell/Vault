@@ -2,7 +2,7 @@ package com.vault.security
 
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
 import java.util.Base64
 
 /**
@@ -11,8 +11,13 @@ import java.util.Base64
  * 职责: 持久化保存 "加密后的私钥密文" 及其元数据, 永不存储私钥明文。
  *
  * 存储栈 (双层加密):
- * 1. Master key: 由 [MasterKeys.getOrCreate] 在 AndroidKeyStore 中生成的 AES-256-GCM 密钥保护。
+ * 1. Master key: 由 [MasterKey.Builder] 在 AndroidKeyStore 中生成的 AES-256-GCM 密钥保护。
  * 2. EncryptedSharedPreferences: 文件级再加密 (PrefKey = AES256-SIV, PrefValue = AES256-GCM)。
+ *
+ * v3.17 API 迁移: MasterKeys(旧) + create(fileName, alias, ...)(废弃) →
+ * MasterKey.Builder + create(context, fileName, masterKey)。两者默认别名
+ * 同为 "_androidx_security_master_key_" 且密钥规格一致 —— 老用户升级后
+ * 既有密文无需重导, 平滑过渡。
  *
  * v3 数据模型: 以 "来源应用包名" 为主键 (每个接入应用一把活动密钥):
  * - 私钥密文 (Base64, 已含 GCM AuthTag)
@@ -51,13 +56,14 @@ class SecureStorage(context: Context) {
         private const val LEGACY_TARGET_LABEL = "Engine"
     }
 
-    private val masterKeyAlias: String =
-        MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+    private val masterKey: MasterKey = MasterKey.Builder(context.applicationContext)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
 
     private val prefs = EncryptedSharedPreferences.create(
-        PREFS_FILE,
-        masterKeyAlias,
         context.applicationContext,
+        PREFS_FILE,
+        masterKey,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )

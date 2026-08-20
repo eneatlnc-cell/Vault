@@ -74,11 +74,14 @@ class IpcReceiver(
     }
 
     /**
-     * 解析签名请求 (myvault://sign?session=..&payload=..); 非法请求返回 null。
+     * 解析签名请求 (myvault://sign + EXTRA_PAYLOAD); 非法请求返回 null。
+     *
+     * v3.17: payload 优先读 Intent Extra (EXTRA_PAYLOAD), Extra 缺失时
+     * 回退 URI 查询参数 (兼容旧版 Engine)。
      */
     fun parseSignRequest(intent: Intent?): IpcSignRequest? {
-        val uri = intent?.data ?: return null
-        return IpcSignRequest.fromUri(uri)
+        if (intent == null) return null
+        return IpcSignRequest.fromIntent(intent)
     }
 
     /**
@@ -90,6 +93,10 @@ class IpcReceiver(
      * 签名规则:
      * - 该应用已绑定密钥 → 用其绑定私钥对 (sessionId ‖ status ‖ ts) 签名
      * - 未绑定密钥 → 发送未签名回调 (仅导入流程的失败场景, Engine 会按规则接受)
+     *
+     * v3.17 载荷去 URI 化: URI 仅保留路由字段 (session/status/code/ts);
+     * 签名与业务结果经 Intent Extra 投递 —— Intent data 会随
+     * ActivityTaskManager 的 "START u0" 日志行整体进 logcat, Extra 不会。
      */
     fun sendCallback(callback: IpcCallback, resultBase64: String? = null) {
         val sessionId = callback.sessionId ?: return
@@ -110,13 +117,12 @@ class IpcReceiver(
         }
 
         val callbackUri = if (callback.isSuccess) {
-            IpcContract.buildSuccessCallbackUri(sessionId, ts, signature ?: "", resultBase64)
+            IpcContract.buildSuccessCallbackUri(sessionId, ts)
         } else {
             IpcContract.buildFailCallbackUri(
                 callback.errorCode ?: IpcErrorCode.UNKNOWN_ERROR,
                 sessionId,
-                ts,
-                signature ?: ""
+                ts
             )
         }
 
@@ -125,6 +131,11 @@ class IpcReceiver(
             // appPackage=com.engine 时与 v2 行为一致
             setPackage(appPackage)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // v3.17: 敏感字段走 Extra, 不进 URI (防系统日志泄露)
+            if (signature != null) putExtra(IpcContract.EXTRA_SIG, signature)
+            if (callback.isSuccess && resultBase64 != null) {
+                putExtra(IpcContract.EXTRA_RESULT, resultBase64)
+            }
         }
 
         runCatching {

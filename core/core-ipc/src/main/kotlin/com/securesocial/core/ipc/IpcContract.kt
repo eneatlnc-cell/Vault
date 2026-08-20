@@ -13,12 +13,21 @@ import android.net.Uri
  *   Engine 用绑定公钥验签 + 时间戳窗口校验, 防止回调伪造与重放
  * - 私钥仍仅经二维码光学通道或受保护的 Intent Extra (import) 传递
  *
- * URI 格式:
+ * v3.17 载荷去 URI 化 (修复: 敏感材料进系统日志):
+ * - 系统在启动 Activity 时会把 Intent URI 完整写入 logcat
+ *   (ActivityTaskManager 的 "START u0" 行), bug 报告/流氓 App 均可读取。
+ * - 原 sign 请求的 payload (中继挑战 nonce / ECDH 公钥) 与 callback 的
+ *   sig / result (ECDSA 签名材料) 全部挂在 URI 查询串里 —— 敏感材料
+ *   系统级泄露面。v3.17 起 URI 仅承载路由字段 (session/status/code/ts/app),
+ *   一切载荷经 Intent Extra 传递 (Extra 不进 ActivityTaskManager 日志)。
+ * - 解析端保留 URI 参数回退路径, 兼容新旧版本混布 (升级窗口期)。
+ *
+ * URI 格式 (v3.17: 载荷已移出 URI):
  * - 唤起导入:  myvault://import?session=<sessionId>&app=<callingPackage>
  * - 唤起验证:  myvault://verify?session=<sessionId>&app=<callingPackage>
- * - 签名请求:  myvault://sign?session=<sessionId>&app=<callingPackage>&payload=<urlencoded base64>
- * - 成功回调:  myvault://callback?session=<id>&status=success&ts=<millis>&sig=<base64>[&result=<base64>]
- * - 失败回调:  myvault://callback?session=<id>&status=fail&code=<err>&ts=<millis>&sig=<base64>
+ * - 签名请求:  myvault://sign?session=<sessionId>&app=<callingPackage>   (payload → EXTRA_PAYLOAD)
+ * - 成功回调:  myvault://callback?session=<id>&status=success&ts=<millis> (sig/result → EXTRA_SIG/EXTRA_RESULT)
+ * - 失败回调:  myvault://callback?session=<id>&status=fail&code=<err>&ts=<millis> (sig → EXTRA_SIG)
  *
  * 多应用绑定 (v3): app 参数标识发起方包名, Vault 据此路由 "该应用专属的活动密钥",
  * 并在状态页展示来源应用名称。包名可信: IPC 入口受 signature 权限保护,
@@ -75,8 +84,27 @@ object IpcContract {
      * Vault 可直接解析而无需开启摄像头扫描。
      * 安全约束 (v2): 该通道仅在 signature 权限 + 显式包名投递保护下使用,
      * 恶意 App 既无法收到此 Intent, 也无法伪造回调。
+     *
+     * v3.17: 同键复用于签名请求的待签字节 (Base64) —— URI 不再携带 payload
+     * (防系统日志泄露, 详见契约头注释)。
      */
     const val EXTRA_PAYLOAD = "extra_payload"
+
+    /**
+     * Intent Extra 键: 回调 ECDSA 签名 (Base64)。
+     *
+     * v3.17 新增: 原挂在回调 URI 的 sig 参数上, 会随 ActivityTaskManager 的
+     * "START u0" 日志行整体进 logcat。迁移至 Extra 后系统日志中仅剩
+     * session/status/code/ts 路由字段。
+     */
+    const val EXTRA_SIG = "extra_sig"
+
+    /**
+     * Intent Extra 键: 回调业务结果 (Base64, 如签名字节 / 恢复公钥)。
+     *
+     * v3.17 新增: 与 EXTRA_SIG 同因从 URI 查询串迁移而来。
+     */
+    const val EXTRA_RESULT = "extra_result"
 
     /**
      * 构建回调签名内容: sessionId ‖ status ‖ ts (均 UTF-8 字节顺序拼接)
@@ -104,38 +132,27 @@ object IpcContract {
     }
 
     /**
-     * 构建成功回调 URI (携带 sessionId / 时间戳 / ECDSA 签名)
+     * 构建成功回调 URI (v3.17: 仅路由字段)
      *
-     * @param signature 对 callbackSigningContent(sessionId, "success", ts) 的 ECDSA 签名
-     * @param result    可选的业务结果 (如签名请求返回的签名字节, Base64)
+     * URI 只携带 session/status/ts; ECDSA 签名与业务结果由调用方经
+     * Intent Extra (EXTRA_SIG / EXTRA_RESULT) 投递 —— Extra 不进
+     * ActivityTaskManager 日志, 签名材料不再随系统日志泄露。
      */
-    fun buildSuccessCallbackUri(
-        sessionId: String,
-        ts: Long,
-        signature: String,
-        result: String? = null
-    ): String {
+    fun buildSuccessCallbackUri(sessionId: String, ts: Long): String {
         return Uri.Builder()
             .scheme(SCHEME)
             .authority(HOST_CALLBACK)
             .appendQueryParameter(PARAM_SESSION, sessionId)
             .appendQueryParameter(PARAM_STATUS, STATUS_SUCCESS)
             .appendQueryParameter(PARAM_TS, ts.toString())
-            .appendQueryParameter(PARAM_SIG, signature)
-            .apply { if (result != null) appendQueryParameter(PARAM_RESULT, result) }
             .build()
             .toString()
     }
 
     /**
-     * 构建失败回调 URI (同样携带时间戳与签名)
+     * 构建失败回调 URI (v3.17: 仅路由字段, 签名经 EXTRA_SIG 投递)
      */
-    fun buildFailCallbackUri(
-        errorCode: IpcErrorCode,
-        sessionId: String,
-        ts: Long,
-        signature: String
-    ): String {
+    fun buildFailCallbackUri(errorCode: IpcErrorCode, sessionId: String, ts: Long): String {
         return Uri.Builder()
             .scheme(SCHEME)
             .authority(HOST_CALLBACK)
@@ -143,7 +160,6 @@ object IpcContract {
             .appendQueryParameter(PARAM_STATUS, STATUS_FAIL)
             .appendQueryParameter(PARAM_CODE, errorCode.code)
             .appendQueryParameter(PARAM_TS, ts.toString())
-            .appendQueryParameter(PARAM_SIG, signature)
             .build()
             .toString()
     }
@@ -162,15 +178,18 @@ object IpcContract {
     }
 
     /**
-     * 构建签名请求 URI。
+     * 构建签名请求 URI (v3.17: 仅路由字段)。
+     *
+     * 待签字节 (Base64) 由调用方经 Intent Extra (EXTRA_PAYLOAD) 投递,
+     * 不再挂 URI 查询串 —— 中继挑战 nonce / ECDH 公钥等材料
+     * 不随 ActivityTaskManager 系统日志泄露。
      *
      * Engine 将待签字节 (Base64) 发给 Vault, Vault 验证生物识别后用
-     * 该应用绑定的身份私钥做 ECDSA 签名, 签名结果经 callback 的 result 参数返回。
+     * 该应用绑定的身份私钥做 ECDSA 签名, 签名结果经 callback 的 result 返回。
      * 典型用途: 中继注册挑战应答、ECDH 信号公钥签名。
      */
     fun buildSignUri(
         sessionId: String,
-        payloadBase64: String,
         appPackage: String = ENGINE_PACKAGE
     ): String {
         return Uri.Builder()
@@ -178,7 +197,6 @@ object IpcContract {
             .authority(HOST_SIGN)
             .appendQueryParameter(PARAM_SESSION, sessionId)
             .appendQueryParameter(PARAM_APP, appPackage)
-            .appendQueryParameter(PARAM_PAYLOAD, payloadBase64)
             .build()
             .toString()
     }

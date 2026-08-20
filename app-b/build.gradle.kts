@@ -12,8 +12,9 @@ android {
         applicationId = "com.vault"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // v3.17: 与 Engine 侧版本对齐 (60KB 载荷 + IPC Extra 化同批发布)
+        versionCode = 2
+        versionName = "3.17.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -100,6 +100,13 @@ class SignActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // v3.17 防截屏: 本页展示待签载荷摘要 (域前缀 + SHA-256), 属敏感材料;
+        // 现代 BiometricPrompt 为系统层 Overlay, 不受宿主窗口 FLAG_SECURE 影响
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
+
         // 不透明最小 UI: 指纹框的稳定宿主 (v3.4)
         setContent {
             VaultTheme {
@@ -141,11 +148,19 @@ class SignActivity : FragmentActivity() {
 
     /**
      * 解析并校验签名请求; 返回 false 表示请求非法 (应直接结束)。
+     *
+     * v3.17: 待签字节优先读 Intent Extra (EXTRA_PAYLOAD), URI 查询参数
+     * 仅作旧版 Engine 兼容回退 —— Intent data 会随 ActivityTaskManager
+     * 的 "START u0" 日志行进 logcat, 挑战 nonce/ECDH 公钥不得进 URI。
      */
     private fun parseAndValidate(intent: Intent?): Boolean {
         val uri = intent?.data ?: return false
         val sessionId = uri.getQueryParameter(IpcContract.PARAM_SESSION) ?: return false
-        val payloadB64 = uri.getQueryParameter(IpcContract.PARAM_PAYLOAD) ?: return false
+
+        // v3.17: Extra 优先, URI 回退
+        val payloadB64 = intent.getStringExtra(IpcContract.EXTRA_PAYLOAD)
+            ?: uri.getQueryParameter(IpcContract.PARAM_PAYLOAD)
+            ?: return false
 
         pendingSessionId = sessionId
         pendingAppPackage = uri.getQueryParameter(IpcContract.PARAM_APP)

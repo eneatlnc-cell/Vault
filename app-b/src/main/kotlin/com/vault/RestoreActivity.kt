@@ -76,6 +76,13 @@ class RestoreActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // v3.17 防截屏: 恢复流程回送绑定公钥, 页面状态属敏感上下文;
+        // 现代 BiometricPrompt 为系统层 Overlay, 不受宿主窗口 FLAG_SECURE 影响
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
+
         setContent {
             VaultTheme {
                 RestoringScreen()

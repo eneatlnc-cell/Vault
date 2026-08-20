@@ -28,7 +28,8 @@ enum class IpcErrorCode(val code: String, val description: String) {
 /**
  * IPC 回调数据 (v2)
  *
- * 从 myvault://callback URI 解析而来。
+ * 从 myvault://callback Intent 解析而来 (v3.17: sig/result 优先读 Intent Extra,
+ * 回退读 URI 查询参数以兼容旧版 Vault)。
  * - sessionId 必须原样回传, 发起方据此将回调路由给正确的等待者
  * - ts + sig: Vault 的 ECDSA 签名覆盖 (sessionId ‖ status ‖ ts),
  *   发起方 (Engine) 必须用绑定身份公钥验签并校验时间戳窗口后才可信任本回调
@@ -52,7 +53,28 @@ data class IpcCallback(
 
     companion object {
         /**
-         * 从 URI 解析回调
+         * 从 Intent 解析回调 (v3.17 推荐入口)
+         *
+         * 路由字段 (session/status/code/ts) 读 URI; 敏感字段 (sig/result)
+         * 优先读 Intent Extra —— 新版 Vault 经 Extra 投递, Extra 缺失时
+         * 回退 URI 查询参数 (兼容升级窗口期的旧版 Vault)。
+         */
+        fun fromIntent(intent: Intent): IpcCallback? {
+            val uri = intent.data ?: return null
+            if (!IpcContract.isCallbackUri(uri)) return null
+
+            val sigExtra = intent.getStringExtra(IpcContract.EXTRA_SIG)
+            val resultExtra = intent.getStringExtra(IpcContract.EXTRA_RESULT)
+
+            val callback = fromUri(uri) ?: return null
+            return callback.copy(
+                signature = sigExtra ?: callback.signature,
+                result = resultExtra ?: callback.result
+            )
+        }
+
+        /**
+         * 从 URI 解析回调 (v3.17: sig/result 仅作旧版兼容回退)
          */
         fun fromUri(uri: Uri): IpcCallback? {
             if (!IpcContract.isCallbackUri(uri)) return null
@@ -129,7 +151,8 @@ data class IpcImportRequest(
 /**
  * IPC 签名请求数据 (v2 新增)
  *
- * 从 myvault://sign URI 解析而来。
+ * 从 myvault://sign Intent 解析而来 (v3.17: payload 优先读 Intent Extra,
+ * 回退读 URI 查询参数以兼容旧版 Engine)。
  * Engine 请求 Vault 用绑定的身份私钥对 payload 做 ECDSA 签名。
  *
  * @param sessionId 会话标识
@@ -146,11 +169,33 @@ data class IpcSignRequest(
         }.getOrNull()
 
     companion object {
-        fun fromUri(uri: Uri): IpcSignRequest? {
+        /**
+         * 从 Intent 解析签名请求 (v3.17 推荐入口)
+         *
+         * sessionId 读 URI; payload 优先读 Intent Extra (EXTRA_PAYLOAD),
+         * Extra 缺失时回退 URI 查询参数 (兼容旧版 Engine)。
+         */
+        fun fromIntent(intent: Intent): IpcSignRequest? {
+            val uri = intent.data ?: return null
             if (!IpcContract.isSignUri(uri)) return null
 
-            val sessionId = uri.getQueryParameter(IpcContract.PARAM_SESSION) ?: return null
+            val payloadExtra = intent.getStringExtra(IpcContract.EXTRA_PAYLOAD)
+            val fromExtra = payloadExtra?.let { fromParts(uri, it) }
+            if (fromExtra != null) return fromExtra
+            return fromUri(uri)
+        }
+
+        /**
+         * 从 URI 解析签名请求 (v3.17: payload 仅作旧版兼容回退)
+         */
+        fun fromUri(uri: Uri): IpcSignRequest? {
+            if (!IpcContract.isSignUri(uri)) return null
             val payload = uri.getQueryParameter(IpcContract.PARAM_PAYLOAD) ?: return null
+            return fromParts(uri, payload)
+        }
+
+        private fun fromParts(uri: Uri, payload: String): IpcSignRequest? {
+            val sessionId = uri.getQueryParameter(IpcContract.PARAM_SESSION) ?: return null
             // Base64 载荷必须可解码, 拒绝畸形请求
             if (runCatching { java.util.Base64.getDecoder().decode(payload) }.isFailure) return null
             return IpcSignRequest(sessionId, payload)
