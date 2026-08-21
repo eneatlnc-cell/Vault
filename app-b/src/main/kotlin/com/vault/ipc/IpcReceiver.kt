@@ -141,8 +141,15 @@ class IpcReceiver(
         runCatching {
             context.startActivity(intent)
         }.onFailure {
-            // Engine 未安装/不可见: 静默忽略, 不影响 Vault 本地流程
-            Log.i(TAG, "Callback delivered but Engine unavailable")
+            // v3.17.1: 记录真实异常类名 —— SecurityException 意味着与 Engine
+            // 签名证书不一致 (signature 权限未授予), 与 "未安装" 的处置完全不同;
+            // 旧实现两类混为一谈, 排障时无从下手。
+            Log.w(
+                TAG,
+                "Callback delivery failed: ${it.javaClass.simpleName}: ${it.message} " +
+                    "(SecurityException = 与 $appPackage 签名不一致; " +
+                    "ActivityNotFoundException = 目标未安装)"
+            )
         }
     }
 }
