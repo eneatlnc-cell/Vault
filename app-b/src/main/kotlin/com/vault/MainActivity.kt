@@ -10,10 +10,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.vault.ui.screen.DynamicCodeScreen
+import com.vault.ui.screen.MigrationScreen
 import com.vault.ui.screen.ScanImportScreen
 import com.vault.ui.screen.VaultStatusScreen
 import com.vault.ui.theme.VaultTheme
 import com.vault.viewmodel.DynamicCodeViewModel
+import com.vault.viewmodel.MigrationViewModel
 import com.vault.viewmodel.ScanImportViewModel
 import com.vault.viewmodel.VaultStatusViewModel
 
@@ -61,7 +63,24 @@ private fun VaultNavGraph() {
             VaultStatusScreen(
                 viewModel = vm,
                 onNavigateToScan = { navController.navigate("scan") },
-                onNavigateToCode = { navController.navigate("code") }
+                onNavigateToCode = { navController.navigate("code") },
+                onNavigateToMigration = { navController.navigate("migration") }
+            )
+        }
+
+        // v3.18.0: 绑定迁移 (换机/重装后经二维码光学通道转移身份)
+        composable("migration") {
+            val vm: MigrationViewModel = viewModel()
+            MigrationScreen(
+                viewModel = vm,
+                onDone = {
+                    navController.navigate("vault") {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            inclusive = false
+                        }
+                        launchSingleTop = true
+                    }
+                }
             )
         }
 

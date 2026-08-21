@@ -21,8 +21,3 @@ captures/
 *.tmp
 *.swp
 *~
-
-# v3.17.1: 共享签名配置与密钥库 (见 signing.properties.example)
-signing.properties
-*.jks
-*.keystore

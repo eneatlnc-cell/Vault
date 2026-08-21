@@ -17,12 +17,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,7 +49,8 @@ import java.util.Locale
 fun VaultStatusScreen(
     viewModel: VaultStatusViewModel,
     onNavigateToScan: () -> Unit,
-    onNavigateToCode: () -> Unit
+    onNavigateToCode: () -> Unit,
+    onNavigateToMigration: () -> Unit
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -76,17 +79,27 @@ fun VaultStatusScreen(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (val s = state) {
-                VaultStatusViewModel.State.Empty -> EmptyVault()
-                is VaultStatusViewModel.State.Loaded -> BindingList(s.bindings)
+                VaultStatusViewModel.State.Empty -> Column(modifier = Modifier.fillMaxSize()) {
+                    EmptyVault(
+                        modifier = Modifier.weight(1f),
+                        // v3.18.0: 空 Vault (新设备) 正是迁移导入的目标场景, 提供入口
+                        onMigrate = onNavigateToMigration
+                    )
+                }
+                is VaultStatusViewModel.State.Loaded -> BindingList(
+                    s.bindings,
+                    // v3.18.0: 有绑定的设备 (旧设备) 可导出迁移码
+                    onMigrate = onNavigateToMigration
+                )
             }
         }
     }
 }
 
 @Composable
-private fun EmptyVault() {
+private fun EmptyVault(modifier: Modifier = Modifier, onMigrate: () -> Unit) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .padding(32.dp),
         verticalArrangement = Arrangement.Center,
@@ -105,11 +118,21 @@ private fun EmptyVault() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
+        Spacer(Modifier.height(24.dp))
+        // v3.18.0: 新设备迁移导入入口 (从旧 Vault 扫码找回绑定身份)
+        OutlinedButton(onClick = onMigrate) {
+            Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("从旧设备迁移绑定")
+        }
     }
 }
 
 @Composable
-private fun BindingList(bindings: List<SecureStorage.StoredBinding>) {
+private fun BindingList(
+    bindings: List<SecureStorage.StoredBinding>,
+    onMigrate: () -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -117,6 +140,35 @@ private fun BindingList(bindings: List<SecureStorage.StoredBinding>) {
     ) {
         items(bindings, key = { it.appPackage }) { item ->
             BindingCard(item)
+        }
+        // v3.18.0: 列表尾部迁移入口 (导出迁移码 / 换机说明)
+        item(key = "migration_entry") {
+            Card(
+                onClick = onMigrate,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SwapHoriz,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.size(12.dp))
+                    Text(
+                        text = "迁移绑定 (换机 / 重装后转移身份)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
