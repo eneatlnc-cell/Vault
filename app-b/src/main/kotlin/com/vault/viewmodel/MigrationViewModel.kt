@@ -95,8 +95,10 @@ class MigrationViewModel(application: Application) : AndroidViewModel(applicatio
                 val exported = migrationManager.exportBinding(appPackage)
                 val bitmap = renderQr(exported.json)
                 _state.value = State.ShowingQR(appLabel, exported.fingerprint, bitmap)
-            } catch (e: Exception) {
-                _state.value = State.Error("导出失败: ${e.message ?: "未知错误"}")
+            } catch (e: Throwable) {
+                // v3.18.1: Throwable 兜底 —— 协程内未捕获的 Error
+                // (NoClassDefFoundError 等) 同样会杀死进程, 统一转错误页
+                _state.value = State.Error("导出失败: ${e.message ?: e.javaClass.simpleName}")
             }
         }
     }
@@ -143,8 +145,8 @@ class MigrationViewModel(application: Application) : AndroidViewModel(applicatio
                     fingerprint = fingerprint,
                     willReplace = migrationManager.hasExistingBinding(data.appPackage)
                 )
-            } catch (e: Exception) {
-                _state.value = State.Error("载荷解析失败: ${e.message ?: "未知错误"}")
+            } catch (e: Throwable) {
+                _state.value = State.Error("载荷解析失败: ${e.message ?: e.javaClass.simpleName}")
             }
         }
     }
@@ -162,8 +164,8 @@ class MigrationViewModel(application: Application) : AndroidViewModel(applicatio
                 val result = migrationManager.importMigration(payload)
                 pendingPayload = null
                 _state.value = State.Success(result.fingerprint)
-            } catch (e: Exception) {
-                _state.value = State.Error("导入失败: ${e.message ?: "Keystore 异常"}")
+            } catch (e: Throwable) {
+                _state.value = State.Error("导入失败: ${e.message ?: e.javaClass.simpleName}")
             }
         }
     }

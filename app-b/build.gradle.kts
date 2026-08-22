@@ -19,9 +19,9 @@ android {
         applicationId = "com.vault"
         minSdk = 26
         targetSdk = 34
-        // v3.18.0: 绑定迁移 (换机/重装后经二维码光学通道转移身份, 私钥不出用户授权)
-        versionCode = 4
-        versionName = "3.18.0"
+        // v3.18.1: 迁移页指纹门闪退根修 (PromptInfo 缺 setNegativeButtonText)
+        versionCode = 5
+        versionName = "3.18.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

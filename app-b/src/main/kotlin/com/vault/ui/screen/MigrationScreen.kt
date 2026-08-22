@@ -580,6 +580,16 @@ private fun ErrorContent(message: String, onBack: () -> Unit) {
  *
  * 非 Composable: 由 onClick 等非组合上下文直接调用,
  * BiometricPrompt 仅需 FragmentActivity 宿主与主线程 Executor。
+ *
+ * v3.18.1 闪退根修: PromptInfo 必须设置 setNegativeButtonText ——
+ * androidx.biometric 硬性规则, 未启用 device credential 的 PromptInfo
+ * 缺少取消按钮文本时 authenticate() 直接抛
+ * IllegalArgumentException("Negative text must be set and non-empty"),
+ * 且抛在点击的同步路径上无保护 → 点击绑定卡片 100% 闪退
+ * (指纹弹窗都来不及出现)。VerifyActivity / ScanImportScreen 的
+ * 既有门禁均带该行, 唯独本函数漏写。
+ * 同时整段 runCatching 兜底: 今后任何 Prompt 构造/系统层异常
+ * 转为 Toast 提示, 迁移流程永不闪退。
  */
 private fun withBiometricGate(context: Context, action: () -> Unit) {
     val activity = context as? FragmentActivity
@@ -588,8 +598,10 @@ private fun withBiometricGate(context: Context, action: () -> Unit) {
         return
     }
 
-    val canAuth = BiometricManager.from(context)
-        .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+    val canAuth = runCatching {
+        BiometricManager.from(context)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+    }.getOrDefault(BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE)
 
     if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
         // 硬件/录入缺失: 提示而非静默放行 (v3.18.0 安全决策)
@@ -601,23 +613,42 @@ private fun withBiometricGate(context: Context, action: () -> Unit) {
         return
     }
 
-    val executor: Executor = androidx.core.content.ContextCompat.getMainExecutor(context)
-    val prompt = BiometricPrompt(
-        activity,
-        executor,
-        object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                action()
+    runCatching {
+        val executor: Executor = androidx.core.content.ContextCompat.getMainExecutor(context)
+        val prompt = BiometricPrompt(
+            activity,
+            executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    action()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // 用户点 "取消" (ERROR_NEGATIVE_BUTTON) 或硬件/锁定超时:
+                    // 已有系统层反馈, 此处静默即可 —— 不执行动作
+                }
             }
-        }
-    )
-    val info = BiometricPrompt.PromptInfo.Builder()
-        .setTitle("Vault 迁移验证")
-        .setSubtitle("指纹验证后才能访问绑定私钥")
-        .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-        .setConfirmationRequired(false)
-        .build()
-    prompt.authenticate(info)
+        )
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Vault 迁移验证")
+            .setSubtitle("指纹验证后才能访问绑定私钥")
+            // v3.18.1: 必须项! 缺失时 authenticate() 抛 IllegalArgumentException (闪退根因)
+            .setNegativeButtonText("取消")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .setConfirmationRequired(false)
+            .build()
+        prompt.authenticate(info)
+    }.onFailure {
+        android.util.Log.e(
+            "VaultMigration",
+            "BiometricPrompt launch failed: ${it.javaClass.simpleName}: ${it.message}"
+        )
+        android.widget.Toast.makeText(
+            context,
+            "指纹验证启动失败: ${it.message ?: "未知错误"}",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
 }
 
 // ---- QR 解码 (与 ScanImportScreen 同模式: 拍照 → ZXing) ----
