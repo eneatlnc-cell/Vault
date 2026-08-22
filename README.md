@@ -62,10 +62,27 @@ vault/
 
 ### 与 Engine 联调注意
 
-1. **签名证书必须一致**: 两 App 的 signature 级权限要求 Engine 与 Vault 使用同一签名证书
-   (开发期共用本机 debug keystore; 发布期统一 release 签名后再安装)。
-2. **安装顺序**: 先装 Vault 再装 Engine 均可, 但升级任一 App 时需保持证书不变, 否则权限失效。
-3. core 模块如需改动, 须同步到 Engine 仓库保持契约一致。
+1. core 模块如需改动, 须同步到 Engine 仓库保持契约一致。
+2. 详见下方签名规范 —— 证书不一致是联调失败的最常见根因。
+
+### 应用族签名规范 (与 Engine IPC 互信)
+
+> 硬性工程规范。2026-08 曾因构建机证书不一致导致 "Engine 无法唤起 Vault / 更新即丢身份" 事故, 本节即为防再踩坑而定。
+
+**为什么必须同一证书**: Vault 与 Engine 的全部 IPC 入口由 signature 级自定义权限互锁 (`com.vault.permission.VAULT_IPC` / `com.engine.permission.ENGINE_CALLBACK`), Android 仅向 "与权限声明方同证书" 的应用授予 signature 权限。证书不一致的后果:
+
+1. Engine 跨应用唤起直接 `SecurityException` (表现: 无法唤起 Vault)
+2. 无法覆盖安装 → 被迫卸载重装 → Vault 内绑定私钥全清 (私钥不出 Vault、无备份, 身份永久丢失)
+
+**证书一致 ≠ 版本联动**: 权限按证书授予、与版本无关。两 App 更新节奏完全独立 —— Vault 装好可不频繁更新, Engine 任意频率迭代, 只要所有构建产物的**证书**不变, IPC 一直通, Vault 无需伴随升级。
+
+**开发期 (debug)**: 统一各构建机的 debug keystore —— 从一台基准机复制 `~/.android/debug.keystore` 到所有开发机与 CI。debug keystore 密码为公开的 `android`, 本就不是秘密, 属官方设计; 同一台机器构建两 App 则天然一致。
+
+**发布期 (release)**: 全应用族 (Vault + Engine + 未来接入应用) 共用一套 release keystore, 存放于 CI secrets 或团队密码管理器, 绝不提交进仓库。**必须离线备份** (如硬件加密盘): release 证书一旦丢失且无备份, signature 互信无法重建 (Android key rotation 仅支持单应用, 不能跨应用签名互认), 全部用户身份重置 —— 这是比任何功能 bug 都严重的事故。
+
+**与身份密钥的区别**: APK 签名密钥是开发基础设施身份, 不接触用户身份数据、不进 Vault、无 "应用生成密钥对" 语义; 身份密钥 (EC P-256) 由应用生成、Vault 离线保管。两者生命周期与保护方式完全不同, 勿混为一谈。
+
+**身份找回通道**: v3.18.0 起 Vault 提供「迁移」功能 —— 旧设备指纹门后导出绑定二维码, 新设备扫码导入, 私钥全程经光学通道、不触网。换机/重装/证书事故后由此找回身份。
 
 ## 安全设计验证
 
